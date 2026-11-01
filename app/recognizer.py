@@ -50,11 +50,14 @@ class Recognizer:
         return feature / np.linalg.norm(feature)
 
     def match(self, embedding: np.ndarray) -> tuple[int | None, float]:
-        if self._gallery is None or self._gallery.version != self._store.version:
-            self._gallery = self._store.gallery()
-        return match_gallery(self._gallery, embedding, config.MATCH_THRESHOLD)
+        return match_gallery(self._current(), embedding, config.MATCH_THRESHOLD)
 
     def name(self, person_id: int | None) -> str | None:
-        if person_id is None or self._gallery is None:
+        if person_id is None:
             return None
-        return self._gallery.names.get(person_id)
+        return self._current().names.get(person_id)
+
+    def _current(self) -> Gallery:
+        if self._gallery is None or self._gallery.version != self._store.version:
+            self._gallery = self._store.gallery()
+        return self._gallery

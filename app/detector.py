@@ -43,9 +43,10 @@ def ensure_model(path: Path, url: str, sha256: str) -> None:
 
 
 def ensure_models() -> None:
-    """Скачивает все модели (детекция и распознавание)."""
+    """Скачивает все модели (детекция, распознавание) и шрифт подписей."""
     ensure_model(config.YUNET_MODEL_FILE, config.YUNET_MODEL_URL, config.YUNET_MODEL_SHA256)
     ensure_model(config.SFACE_MODEL_FILE, config.SFACE_MODEL_URL, config.SFACE_MODEL_SHA256)
+    ensure_model(config.FONT_FILE, config.FONT_URL, config.FONT_SHA256)
 
 
 class FaceDetector:
@@ -82,13 +83,3 @@ class FaceDetector:
                 landmarks=tuple((int(px), int(py)) for px, py in points),
             ))
         return faces
-
-
-def draw_faces(frame: np.ndarray, faces: list[Face]) -> None:
-    """Рисует рамки и уверенность поверх кадра (in-place)."""
-    for face in faces:
-        cv2.rectangle(frame, (face.x, face.y), (face.x + face.w, face.y + face.h), (0, 220, 0), 2)
-        cv2.putText(
-            frame, f"{face.score:.2f}", (face.x, max(face.y - 6, 12)),
-            cv2.FONT_HERSHEY_SIMPLEX, 0.6, (0, 220, 0), 2,
-        )

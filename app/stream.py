@@ -1,17 +1,16 @@
-"""Воркеры камер: чтение HLS с Bearer-токеном, поиск лиц, отдача JPEG-кадров."""
+"""Воркеры камер: чтение HLS с Bearer-токеном, анализ лиц, отдача JPEG-кадров."""
 
 import logging
 import queue
 import threading
 import time
-from dataclasses import asdict
-
 import av
 import cv2
 
 from . import config
-from .detector import Face, FaceDetector, draw_faces
+from .pipeline import FacePipeline
 from .rosdomofon import AuthError, Camera, RosdomofonClient
+from .store import Store
 
 _LOGGER = logging.getLogger(__name__)
 
@@ -57,24 +56,34 @@ def _drain(packets: queue.Queue) -> None:
 
 
 class CameraWorker(threading.Thread):
-    """Фоновый поток одной камеры. Останавливается сам, если его долго никто не читает."""
+    """Фоновый поток одной камеры: чтение HLS, анализ лиц, JPEG для зрителей.
 
-    def __init__(self, client: RosdomofonClient, camera: Camera) -> None:
+    Постоянный воркер (мониторинг) работает, пока его не остановят; воркер по
+    требованию останавливается сам через WORKER_IDLE_TIMEOUT без зрителей.
+    """
+
+    def __init__(
+        self, client: RosdomofonClient, store: Store, camera: Camera, persistent: bool = False
+    ) -> None:
         super().__init__(name=f"camera-{camera.id}", daemon=True)
         self._client = client
+        self._store = store
         self.camera = camera
+        self.persistent = persistent
+        self._pipeline: FacePipeline | None = None
         self._cond = threading.Condition()
         self._jpeg: bytes | None = None
         self._frame_no = 0
-        self._faces: list[Face] = []
         self._error: str | None = None
-        self._last_access = time.monotonic()
+        self._streaming = False
+        self._last_view = time.monotonic()
         self._stopped = threading.Event()
 
     # --- Для HTTP-обработчиков ---
 
     def touch(self) -> None:
-        self._last_access = time.monotonic()
+        """Отмечает обращение зрителя (видео или текущие лица)."""
+        self._last_view = time.monotonic()
 
     @property
     def stopped(self) -> bool:
@@ -87,11 +96,21 @@ class CameraWorker(threading.Thread):
             self._cond.wait_for(lambda: self._frame_no > after or self.stopped, timeout)
             return self._frame_no, self._jpeg
 
-    def status(self) -> dict:
+    def faces(self) -> dict:
         self.touch()
         return {
             "camera_id": self.camera.id,
-            "faces": [asdict(f) for f in self._faces],
+            "faces": self._pipeline.faces() if self._pipeline else [],
+            "error": self._error,
+        }
+
+    def status(self) -> dict:
+        return {
+            "camera_id": self.camera.id,
+            "name": self.camera.name,
+            "monitored": self.persistent,
+            "running": not self.stopped,
+            "streaming": self._streaming,
             "error": self._error,
         }
 
@@ -103,34 +122,44 @@ class CameraWorker(threading.Thread):
     # --- Основной цикл ---
 
     def run(self) -> None:
-        detector = FaceDetector()
+        try:
+            self._pipeline = FacePipeline(self.camera.id, self._store)
+        except Exception as exc:  # noqa: BLE001 — например, не скачалась модель
+            _LOGGER.exception("Камера %s: не удалось создать конвейер", self.camera.id)
+            self._error = f"Ошибка запуска анализа: {exc}"
+            self.stop()
+            return
         force_refresh = False
         while not self._idle() and not self.stopped:
             try:
-                self._consume(detector, force_refresh)
+                self._consume(force_refresh)
                 force_refresh = False
             except av.error.HTTPUnauthorizedError:
                 _LOGGER.info("Камера %s: 401, обновляю токен", self.camera.id)
                 self._error = "Токен отклонён, обновляю"
                 force_refresh = True
             except AuthError as exc:
-                self._error = str(exc)
+                self._error = f"Нужно войти заново: {exc}"
                 _LOGGER.warning("Камера %s: %s", self.camera.id, exc)
                 break
             except (av.error.FFmpegError, OSError) as exc:
                 self._error = f"Ошибка потока: {exc}"
                 _LOGGER.warning("Камера %s: %s", self.camera.id, exc)
+            finally:
+                self._streaming = False
+                self._pipeline.flush()
             self._stopped.wait(_RECONNECT_DELAY)
         _LOGGER.info("Камера %s: воркер остановлен", self.camera.id)
         self.stop()
 
-    def _consume(self, detector: FaceDetector, force_refresh: bool) -> None:
+    def _consume(self, force_refresh: bool) -> None:
         token = self._client.access_token(force_refresh=force_refresh)
         # Заголовок передаётся и в запросы сегментов — HLS-демуксер ffmpeg копирует его
         options = {"headers": f"Authorization: Bearer {token}\r\n", "rw_timeout": "15000000"}
         _LOGGER.info("Камера %s: подключаюсь к %s", self.camera.id, self.camera.hls_url)
         with av.open(self.camera.hls_url, options=options, timeout=15) as container:
             self._error = None
+            self._streaming = True
             stream = container.streams.video[0]
             # Сеть читается в отдельном потоке: иначе, пока ffmpeg синхронно
             # скачивает следующий сегмент, кадры не выходят и картинка замирает.
@@ -142,16 +171,14 @@ class CameraWorker(threading.Thread):
             )
             reader.start()
             try:
-                self._play(detector, packets)
+                self._play(packets)
             finally:
                 done.set()
                 _drain(packets)
                 reader.join()
 
-    def _play(self, detector: FaceDetector, packets: queue.Queue) -> None:
-        """Декодирует пакеты из очереди и публикует кадры в темпе их PTS."""
-        min_interval = 1 / config.DETECT_MAX_FPS
-        last_detect = 0.0
+    def _play(self, packets: queue.Queue) -> None:
+        """Декодирует пакеты из очереди и обрабатывает кадры в темпе их PTS."""
         # HLS приходит сегментами по несколько секунд, и декодер выдаёт весь
         # сегмент разом. Без выравнивания по PTS клиент увидел бы только
         # последний кадр сегмента — картинка обновлялась бы раз в сегмент.
@@ -176,42 +203,77 @@ class CameraWorker(threading.Thread):
                     if delay > 0 and self._stopped.wait(delay):
                         return
                 img = frame.to_ndarray(format="bgr24")
-                now = time.monotonic()
-                if now - last_detect >= min_interval:
-                    self._faces = detector.detect(img)
-                    last_detect = now
-                draw_faces(img, self._faces)
-                ok, buf = cv2.imencode(".jpg", img, [cv2.IMWRITE_JPEG_QUALITY, config.JPEG_QUALITY])
-                if ok:
-                    with self._cond:
-                        self._jpeg = buf.tobytes()
-                        self._frame_no += 1
-                        self._cond.notify_all()
+                self._pipeline.process(img, time.monotonic(), time.time())
+                # Без зрителей рамки не рисуем и JPEG не кодируем — экономия CPU
+                if self._has_viewer():
+                    self._publish(img)
+
+    def _publish(self, img) -> None:
+        self._pipeline.draw(img)
+        ok, buf = cv2.imencode(".jpg", img, [cv2.IMWRITE_JPEG_QUALITY, config.JPEG_QUALITY])
+        if ok:
+            with self._cond:
+                self._jpeg = buf.tobytes()
+                self._frame_no += 1
+                self._cond.notify_all()
+
+    def _has_viewer(self) -> bool:
+        return time.monotonic() - self._last_view < config.VIEWER_TIMEOUT
 
     def _idle(self) -> bool:
-        return time.monotonic() - self._last_access > config.WORKER_IDLE_TIMEOUT
+        if self.persistent:
+            return False
+        return time.monotonic() - self._last_view > config.WORKER_IDLE_TIMEOUT
 
 
 class WorkerRegistry:
-    """Запускает воркер камеры по первому запросу и переиспользует его."""
+    """Воркеры камер: постоянные для мониторинга и по требованию для просмотра."""
 
-    def __init__(self, client: RosdomofonClient) -> None:
+    def __init__(self, client: RosdomofonClient, store: Store) -> None:
         self._client = client
+        self._store = store
         self._workers: dict[int, CameraWorker] = {}
         self._lock = threading.Lock()
 
+    def start_monitoring(self) -> None:
+        """Запускает постоянные воркеры для камер мониторинга (MONITOR_CAMERAS или все)."""
+        cameras = self._client.cameras()
+        wanted = config.MONITOR_CAMERAS
+        if wanted is not None:
+            missing = wanted - {c.id for c in cameras}
+            if missing:
+                _LOGGER.warning("Камеры мониторинга не найдены в аккаунте: %s", sorted(missing))
+            cameras = [c for c in cameras if c.id in wanted]
+        for camera in cameras:
+            self._start(camera, persistent=True)
+        _LOGGER.info("Мониторинг камер: %s", [c.id for c in cameras])
+
     def get(self, camera: Camera) -> CameraWorker:
+        """Воркер для просмотра: уже работающий или новый по требованию."""
+        worker = self._start(camera, persistent=False)
+        worker.touch()
+        return worker
+
+    def statuses(self) -> list[dict]:
         with self._lock:
-            worker = self._workers.get(camera.id)
-            if worker is None or worker.stopped:
-                worker = CameraWorker(self._client, camera)
-                self._workers[camera.id] = worker
-                worker.start()
-            worker.touch()
-            return worker
+            return [w.status() for w in self._workers.values()]
 
     def stop_all(self) -> None:
         with self._lock:
-            for worker in self._workers.values():
-                worker.stop()
+            workers = list(self._workers.values())
             self._workers.clear()
+        for worker in workers:
+            worker.stop()
+        for worker in workers:
+            worker.join(timeout=20)
+
+    def _start(self, camera: Camera, persistent: bool) -> CameraWorker:
+        with self._lock:
+            worker = self._workers.get(camera.id)
+            if worker is None or worker.stopped:
+                worker = CameraWorker(self._client, self._store, camera, persistent)
+                self._workers[camera.id] = worker
+                worker.start()
+            elif persistent:
+                worker.persistent = True  # воркер просмотра становится постоянным
+            return worker

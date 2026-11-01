@@ -49,6 +49,13 @@ YUNET_MODEL_FILE = MODELS_DIR / "face_detection_yunet_2023mar.onnx"
 SFACE_MODEL_URL = f"{_ZOO}/face_recognition_sface/face_recognition_sface_2021dec.onnx"
 SFACE_MODEL_SHA256 = "0ba9fbfa01b5270c96627c4ef784da859931e02f04419c829e83484087c34e79"
 SFACE_MODEL_FILE = MODELS_DIR / "face_recognition_sface_2021dec.onnx"
+# Шрифт с кириллицей для подписей на видео (OFL)
+FONT_URL = (
+    "https://github.com/notofonts/notofonts.github.io/raw/main/"
+    "fonts/NotoSans/hinted/ttf/NotoSans-Regular.ttf"
+)
+FONT_SHA256 = "478c558ea716033cd60c03438f628dfa75694dcf6b5f6d505a2f05fd2b4f3823"
+FONT_FILE = MODELS_DIR / "NotoSans-Regular.ttf"
 
 # Детекция: ширина кадра, до которой он уменьшается перед поиском лиц,
 # минимальная уверенность и максимальная частота запуска детектора.

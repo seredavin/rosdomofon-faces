@@ -139,3 +139,19 @@ def test_offer_best_keeps_highest_score():
     t.offer_best(0.3, b"b", emb)
     t.offer_best(0.8, b"c", emb)
     assert t.best_image == b"c" and t.had_usable_face
+
+
+def test_final_person_when_votes_not_enough():
+    t = _track()
+    assert t.final_person() is None
+    t.add_vote(7, now=0)
+    assert t.final_person() == 7
+    t.add_vote(None, now=1)
+    assert t.final_person() is None  # 1:1 — неоднозначно
+
+
+def test_final_person_follows_decision():
+    t = _track()
+    for i, vote in enumerate([7, 7, 7]):
+        t.add_vote(vote, now=i)
+    assert t.final_person() == 7

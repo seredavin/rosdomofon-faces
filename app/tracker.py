@@ -64,6 +64,16 @@ class Track:
         self.person_id = winner
         self.status = UNKNOWN if winner is None else KNOWN
 
+    def final_person(self) -> int | None:
+        """Итог появления для журнала: решение голосования, а если голосов
+        не хватило — однозначное большинство имеющихся, иначе «незнакомый»."""
+        if self.status != PENDING:
+            return self.person_id
+        ranked = Counter(self.votes).most_common()
+        if not ranked or (len(ranked) > 1 and ranked[0][1] == ranked[1][1]):
+            return None
+        return ranked[0][0]
+
     def offer_best(self, score: float, image: bytes, embedding: np.ndarray) -> None:
         if score > self.best_score:
             self.best_score = score
