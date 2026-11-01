@@ -1,0 +1,179 @@
+<!doctype html>
+<html lang="ru">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Росдомофон: лица</title>
+<style>
+  :root { color-scheme: light dark; font-family: system-ui, sans-serif; }
+  body { margin: 0; padding: 16px; max-width: 1100px; margin-inline: auto; }
+  header { display: flex; justify-content: space-between; align-items: center; }
+  .hidden { display: none !important; }
+  form { display: flex; gap: 8px; margin: 8px 0; flex-wrap: wrap; }
+  input { padding: 8px; font-size: 16px; min-width: 260px; }
+  button { padding: 8px 14px; font-size: 15px; cursor: pointer; }
+  .tabs button.active { font-weight: bold; text-decoration: underline; }
+  #cameras { display: flex; gap: 8px; margin: 12px 0; flex-wrap: wrap; }
+  #cameras button.active { outline: 2px solid #2a7; }
+  #video { width: 100%; background: #111; min-height: 300px; border-radius: 6px; }
+  #info { margin-top: 8px; font-size: 15px; }
+  .error { color: #d33; }
+</style>
+</head>
+<body>
+<header>
+  <h2>Росдомофон: поиск лиц</h2>
+  <button id="logout" class="hidden">Выйти</button>
+</header>
+
+<section id="login" class="hidden">
+  <div class="tabs">
+    <button id="tab-sms" class="active">Вход по SMS</button>
+    <button id="tab-token">Вход по refresh_token</button>
+  </div>
+  <div id="pane-sms">
+    <form id="form-phone">
+      <input id="phone" placeholder="+7 (999) 123-45-67" autocomplete="tel" required>
+      <button>Получить SMS</button>
+    </form>
+    <form id="form-code" class="hidden">
+      <input id="code" placeholder="Код из SMS" inputmode="numeric" autocomplete="one-time-code" required>
+      <button>Войти</button>
+    </form>
+  </div>
+  <div id="pane-token" class="hidden">
+    <form id="form-token">
+      <input id="refresh-token" placeholder="refresh_token" required>
+      <button>Войти</button>
+    </form>
+  </div>
+</section>
+
+<section id="main" class="hidden">
+  <div id="cameras"></div>
+  <img id="video" alt="Выберите камеру">
+  <div id="info"></div>
+</section>
+
+<p id="error" class="error"></p>
+
+<script>
+const $ = (id) => document.getElementById(id);
+let currentCamera = null;
+let facesTimer = null;
+
+async function api(path, body) {
+  const resp = await fetch(path, body === undefined ? {} : {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify(body),
+  });
+  const data = await resp.json().catch(() => ({}));
+  if (!resp.ok) {
+    if (resp.status === 401 && !path.startsWith("/api/auth/")) showLogin();
+    throw new Error(data.detail || `HTTP ${resp.status}`);
+  }
+  return data;
+}
+
+function showError(err) { $("error").textContent = err ? err.message || String(err) : ""; }
+
+function showLogin() {
+  stopVideo();
+  $("main").classList.add("hidden");
+  $("logout").classList.add("hidden");
+  $("login").classList.remove("hidden");
+}
+
+async function showMain() {
+  $("login").classList.add("hidden");
+  $("main").classList.remove("hidden");
+  $("logout").classList.remove("hidden");
+  const cameras = await api("/api/cameras");
+  const box = $("cameras");
+  box.innerHTML = "";
+  const saved = Number(localStorage.getItem("camera"));
+  let initial = null;
+  for (const cam of cameras) {
+    const btn = document.createElement("button");
+    btn.textContent = `${cam.name} (${cam.id})`;
+    btn.onclick = () => selectCamera(cam.id, btn);
+    box.appendChild(btn);
+    if (!initial || cam.id === saved) initial = [cam.id, btn];
+  }
+  // Сразу показываем последнюю выбранную камеру, а если её нет — первую в списке
+  if (initial) selectCamera(...initial);
+  else $("info").textContent = "Камер не найдено";
+}
+
+function stopVideo() {
+  clearInterval(facesTimer);
+  $("video").removeAttribute("src");
+  currentCamera = null;
+}
+
+function selectCamera(id, btn) {
+  stopVideo();
+  document.querySelectorAll("#cameras button").forEach((b) => b.classList.remove("active"));
+  btn.classList.add("active");
+  currentCamera = id;
+  localStorage.setItem("camera", id);
+  $("info").textContent = "Подключаюсь…";
+  $("video").src = `/api/cameras/${id}/mjpeg`;
+  facesTimer = setInterval(async () => {
+    try {
+      const st = await api(`/api/cameras/${id}/faces`);
+      if (currentCamera !== id) return;
+      $("info").textContent = st.error ? `⚠ ${st.error}` : `Лиц в кадре: ${st.faces.length}`;
+    } catch (e) { showError(e); }
+  }, 500);
+}
+
+function switchTab(sms) {
+  $("tab-sms").classList.toggle("active", sms);
+  $("tab-token").classList.toggle("active", !sms);
+  $("pane-sms").classList.toggle("hidden", !sms);
+  $("pane-token").classList.toggle("hidden", sms);
+}
+$("tab-sms").onclick = () => switchTab(true);
+$("tab-token").onclick = () => switchTab(false);
+
+$("form-phone").onsubmit = async (e) => {
+  e.preventDefault(); showError();
+  try {
+    await api("/api/auth/sms", { phone: $("phone").value });
+    $("form-code").classList.remove("hidden");
+    $("code").focus();
+  } catch (err) { showError(err); }
+};
+
+$("form-code").onsubmit = async (e) => {
+  e.preventDefault(); showError();
+  try {
+    await api("/api/auth/code", { phone: $("phone").value, code: $("code").value });
+    await showMain();
+  } catch (err) { showError(err); }
+};
+
+$("form-token").onsubmit = async (e) => {
+  e.preventDefault(); showError();
+  try {
+    await api("/api/auth/refresh-token", { refresh_token: $("refresh-token").value });
+    await showMain();
+  } catch (err) { showError(err); }
+};
+
+$("logout").onclick = async () => {
+  await api("/api/auth/logout", {});
+  showLogin();
+};
+
+(async () => {
+  try {
+    const st = await api("/api/auth/status");
+    st.authorized ? await showMain() : showLogin();
+  } catch (err) { showError(err); }
+})();
+</script>
+</body>
+</html>
