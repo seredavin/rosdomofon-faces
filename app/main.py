@@ -9,7 +9,7 @@ from fastapi.responses import FileResponse, StreamingResponse
 from pydantic import BaseModel
 
 from . import config
-from .detector import ensure_model
+from .detector import ensure_models
 from .rosdomofon import AuthError, RosdomofonClient, normalize_phone
 from .stream import WorkerRegistry
 
@@ -21,7 +21,7 @@ workers = WorkerRegistry(client)
 
 @asynccontextmanager
 async def lifespan(_app: FastAPI):
-    ensure_model()
+    ensure_models()
     yield
     workers.stop_all()
 
