@@ -19,9 +19,9 @@
 
 ## 4. API
 
-- [ ] 4.1 `GET /api/doors`, `GET/PUT /api/unlock`
-- [ ] 4.2 `PATCH /api/persons/{id}` с `can_unlock`; поле `unlock` и фильтр `unlocked` в `GET /api/events`
-- [ ] 4.3 Тесты API
+- [x] 4.1 `GET /api/doors`, `GET/PUT /api/unlock`
+- [x] 4.2 `PATCH /api/persons/{id}` с `can_unlock`; поле `unlock` и фильтр `unlocked` в `GET /api/events`
+- [x] 4.3 Тесты API
 
 ## 5. Интерфейс
 
