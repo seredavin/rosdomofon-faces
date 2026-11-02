@@ -48,7 +48,10 @@
 <body>
 <header>
   <h2>Росдомофон: лица</h2>
-  <button id="logout" class="hidden">Выйти</button>
+  <div class="row">
+    <button id="logout" class="hidden">Выйти из Росдомофона</button>
+    <button id="ui-logout" class="hidden">Выйти из интерфейса</button>
+  </div>
 </header>
 
 <section id="login" class="hidden">
@@ -158,6 +161,10 @@ async function api(path, { method, body } = {}) {
   const resp = await fetch(path, opts);
   const data = await resp.json().catch(() => ({}));
   if (!resp.ok) {
+    if (data.code === "ui_login_required") {
+      location = "/login";
+      throw new Error(data.detail);
+    }
     if (resp.status === 401 && !path.startsWith("/api/auth/")) showLogin();
     const detail = Array.isArray(data.detail) ? data.detail.map((d) => d.msg).join("; ") : data.detail;
     throw new Error(detail || `HTTP ${resp.status}`);
@@ -487,7 +494,15 @@ $("logout").onclick = guarded(async () => {
   showLogin();
 });
 
+$("ui-logout").onclick = guarded(async () => {
+  stopVideo();
+  await api("/api/session/logout", { body: {} });
+  location = "/login";
+});
+
 guarded(async () => {
+  const session = await api("/api/session");
+  $("ui-logout").classList.toggle("hidden", !session.enabled);
   const st = await api("/api/auth/status");
   st.authorized ? await showMain() : showLogin();
 })();

@@ -6,13 +6,14 @@ import threading
 from contextlib import asynccontextmanager
 
 import httpx
-from fastapi import FastAPI, HTTPException, Query
-from fastapi.responses import FileResponse, StreamingResponse
+from fastapi import FastAPI, HTTPException, Query, Request
+from fastapi.responses import FileResponse, JSONResponse, RedirectResponse, StreamingResponse
 from pydantic import BaseModel
 
 from . import config
 from .detector import ensure_models
 from .rosdomofon import AuthError, RosdomofonClient, normalize_phone
+from .session import COOKIE_NAME, Auth, SessionMiddleware, TooManyAttempts, WrongPassword
 from .store import UNLOCK_MODES, Conflict, Invalid, NotFound, Store, StoreError
 from .stream import WorkerRegistry
 from .unlock import DoorUnlocker
@@ -23,6 +24,7 @@ client = RosdomofonClient()
 store = Store()
 unlocker = DoorUnlocker(client, store)
 workers = WorkerRegistry(client, store, unlocker)
+auth = Auth()
 
 
 def _start_monitoring() -> None:
@@ -45,6 +47,11 @@ def _cleanup_loop(stop: threading.Event) -> None:
 
 @asynccontextmanager
 async def lifespan(_app: FastAPI):
+    if not auth.enabled:
+        _LOGGER.warning(
+            "ROSDOMOFON_UI_PASSWORD не задан: интерфейс открыт без пароля — "
+            "не публикуйте его за пределы localhost"
+        )
     await asyncio.to_thread(ensure_models)
     stop_cleanup = threading.Event()
     threading.Thread(target=_cleanup_loop, args=(stop_cleanup,), name="cleanup", daemon=True).start()
@@ -56,6 +63,11 @@ async def lifespan(_app: FastAPI):
 
 
 app = FastAPI(title="Росдомофон: лица", lifespan=lifespan)
+app.add_middleware(SessionMiddleware, get_auth=lambda: auth)
+
+
+class PasswordIn(BaseModel):
+    password: str
 
 
 class PhoneIn(BaseModel):
@@ -120,7 +132,55 @@ def _image(path) -> FileResponse:
     return FileResponse(path, media_type="image/jpeg", headers={"Cache-Control": "private, max-age=86400"})
 
 
-# --- Авторизация ---
+# --- Вход в интерфейс ---
+
+def _authenticated(request: Request) -> bool:
+    return not auth.enabled or auth.verify(request.cookies.get(COOKIE_NAME))
+
+
+@app.get("/api/health")
+def health():
+    return {"ok": True}
+
+
+@app.get("/api/session")
+def session_status(request: Request):
+    return {"enabled": auth.enabled, "authenticated": _authenticated(request)}
+
+
+@app.post("/api/session/login")
+def session_login(body: PasswordIn, request: Request):
+    if not auth.enabled:
+        return {"ok": True}
+    try:
+        cookie = auth.login(body.password, request.client.host if request.client else "")
+    except TooManyAttempts as exc:
+        raise HTTPException(429, "Слишком много попыток, попробуйте позже") from exc
+    except WrongPassword as exc:
+        raise HTTPException(401, "Неверный пароль") from exc
+    response = JSONResponse({"ok": True})
+    response.set_cookie(
+        COOKIE_NAME, cookie, max_age=int(auth.max_age), path="/",
+        httponly=True, samesite="strict", secure=request.url.scheme == "https",
+    )
+    return response
+
+
+@app.post("/api/session/logout")
+def session_logout():
+    response = JSONResponse({"ok": True})
+    response.delete_cookie(COOKIE_NAME, path="/", httponly=True, samesite="strict")
+    return response
+
+
+@app.get("/login")
+def login_page(request: Request):
+    if _authenticated(request):
+        return RedirectResponse("/", status_code=303)
+    return FileResponse(config.STATIC_DIR / "login.html")
+
+
+# --- Вход в аккаунт Росдомофона ---
 
 @app.get("/api/auth/status")
 def auth_status():
