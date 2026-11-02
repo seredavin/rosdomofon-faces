@@ -155,3 +155,23 @@ def test_unlocker_crash_does_not_break_pipeline(store, person):
     assert pipeline.faces()[0]["unlock"] == FAILED
     pipeline.flush()
     assert len(store.list_events()[0]) == 1  # событие всё равно записано
+
+
+def test_event_keeps_name_when_person_turns_away_after_unlock(store, person):
+    """Сценарий из проверки 6.3: узнали, дверь открылась, человек отвернулся и ушёл."""
+    store.set_unlock_mode("on")
+    client = FakeClient()
+    detector = FakeDetector()
+    recognizer = FakeRecognizer(store, person)
+    pipeline = FacePipeline(1001, store, detector, recognizer, DoorUnlocker(client, store))
+    detector.faces = [face(size=80)]
+    t = _run(pipeline, FRAME, 2)
+    assert client.opened
+    recognizer.person_id = None  # дальше лицо не совпадает с базой
+    t = _run(pipeline, FRAME, 9, t0=t)
+    assert pipeline.faces()[0]["status"] == "known"
+    detector.faces = []
+    _run(pipeline, FRAME, 3, t0=t)
+
+    events, _ = store.list_events()
+    assert [(e["person_name"], e["unlock"], e["assignable"]) for e in events] == [("Кирилл", "opened", False)]
