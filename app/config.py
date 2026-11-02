@@ -34,6 +34,17 @@ TOKEN_FILE = DATA_DIR / "token.json"
 DB_FILE = DATA_DIR / "faces.db"
 FACES_DIR = DATA_DIR / "faces"
 
+# Вход в веб-интерфейс: пароль владельца (пусто — авторизация выключена).
+# Сессия — подписанная cookie; ключ подписи — в SESSION_SECRET_FILE (0600).
+UI_PASSWORD = _env("UI_PASSWORD", "")
+SESSION_SECRET_FILE = DATA_DIR / "session_secret"
+SESSION_MAX_AGE = 30 * 24 * 3600
+# Не больше LOGIN_MAX_FAILURES неудачных попыток входа с адреса за окно (секунды)
+LOGIN_MAX_FAILURES = 5
+LOGIN_FAILURE_WINDOW = 15 * 60
+# Адреса reverse proxy, которым верим в X-Forwarded-For/-Proto (через запятую, * — всем)
+FORWARDED_ALLOW_IPS = _env("FORWARDED_ALLOW_IPS", "127.0.0.1")
+
 # API Росдомофона (см. custom_components/rosdomofon/const.py в HA-интеграции)
 BASE_URL = "https://rdba.rosdomofon.com"
 SMS_REQUEST_URL = f"{BASE_URL}/abonents-service/api/v1/abonents/{{phone}}/sms"

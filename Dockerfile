@@ -28,8 +28,8 @@ VOLUME /app/data
 
 EXPOSE 8000
 HEALTHCHECK --interval=30s --timeout=5s --start-period=30s \
-    CMD python -c "import urllib.request; urllib.request.urlopen('http://127.0.0.1:8000/api/auth/status', timeout=4)"
+    CMD python -c "import urllib.request; urllib.request.urlopen('http://127.0.0.1:8000/api/health', timeout=4)"
 
-# Внутри контейнера слушаем все интерфейсы; наружу публиковать только на
-# localhost или в доверенную сеть — своей авторизации у сервиса нет.
+# Внутри контейнера слушаем все интерфейсы. Публиковать наружу — только с
+# ROSDOMOFON_UI_PASSWORD и за reverse proxy с HTTPS (см. README).
 CMD ["python", "-m", "app", "--host", "0.0.0.0", "--port", "8000"]

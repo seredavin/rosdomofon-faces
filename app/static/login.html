@@ -1,0 +1,49 @@
+<!doctype html>
+<html lang="ru">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Вход — Росдомофон: лица</title>
+<style>
+  :root { color-scheme: light dark; font-family: system-ui, sans-serif; }
+  body { margin: 0; padding: 16px; max-width: 420px; margin-inline: auto; }
+  form { display: flex; gap: 8px; margin: 8px 0; flex-wrap: wrap; }
+  input { padding: 7px; font-size: 15px; flex: 1; min-width: 200px; }
+  button { padding: 7px 12px; font-size: 15px; cursor: pointer; }
+  .error { color: #d33; }
+</style>
+</head>
+<body>
+<h2>Росдомофон: лица</h2>
+<form id="form-login">
+  <!-- Скрытое имя пользователя — чтобы менеджеры паролей запоминали пароль -->
+  <input name="username" value="rosdomofon-faces" autocomplete="username" hidden>
+  <input id="password" type="password" placeholder="Пароль" autocomplete="current-password" required autofocus>
+  <button>Войти</button>
+</form>
+<p id="error" class="error"></p>
+
+<script>
+document.getElementById("form-login").onsubmit = async (e) => {
+  e.preventDefault();
+  const error = document.getElementById("error");
+  error.textContent = "";
+  try {
+    const resp = await fetch("/api/session/login", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ password: document.getElementById("password").value }),
+    });
+    if (resp.ok) {
+      location = "/";
+      return;
+    }
+    const data = await resp.json().catch(() => ({}));
+    error.textContent = data.detail || `HTTP ${resp.status}`;
+  } catch (err) {
+    error.textContent = err.message || String(err);
+  }
+};
+</script>
+</body>
+</html>
