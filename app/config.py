@@ -39,6 +39,8 @@ BASE_URL = "https://rdba.rosdomofon.com"
 SMS_REQUEST_URL = f"{BASE_URL}/abonents-service/api/v1/abonents/{{phone}}/sms"
 TOKEN_REQUEST_URL = f"{BASE_URL}/authserver-service/oauth/token"
 CAMERAS_LIST_URL = f"{BASE_URL}/abonents-service/api/v2/abonents/cameras"
+KEYS_LIST_URL = f"{BASE_URL}/abonents-service/api/v2/abonents/keys"
+OPEN_DOOR_URL = f"{BASE_URL}/rdas-service/api/v1/rdas/{{adapter_id}}/activate_key"
 CLIENT_ID = "abonent"
 
 # Модели из opencv_zoo: YuNet — детекция, SFace — распознавание
@@ -88,6 +90,10 @@ TRACK_IOU_THRESHOLD = 0.3
 UNKNOWN_RETENTION_DAYS = _env_float("UNKNOWN_RETENTION_DAYS", 7)
 KNOWN_RETENTION_DAYS = _env_float("KNOWN_RETENTION_DAYS", 30)
 CLEANUP_INTERVAL = 3600
+
+# Открытие двери: не чаще раза в столько секунд на дверь, таймаут запроса
+UNLOCK_COOLDOWN = 30
+UNLOCK_TIMEOUT = 5
 
 # Воркер камеры вне мониторинга останавливается, если поток никто не смотрит столько секунд
 WORKER_IDLE_TIMEOUT = 30

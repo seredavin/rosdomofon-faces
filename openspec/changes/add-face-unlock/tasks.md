@@ -1,7 +1,7 @@
 ## 1. Клиент Росдомофона
 
-- [ ] 1.1 `RosdomofonClient.doors()`: список ключей (`/abonents/keys`) с названием по типу двери
-- [ ] 1.2 `RosdomofonClient.open_door(adapter_id, relay)`: `activate_key` с `{"rele": relay}`, таймаут 5 с, повтор после обновления токена при 401
+- [x] 1.1 `RosdomofonClient.doors()`: список ключей (`/abonents/keys`) с названием по типу двери
+- [x] 1.2 `RosdomofonClient.open_door(adapter_id, relay)`: `activate_key` с `{"rele": relay}`, таймаут 5 с, повтор после обновления токена при 401
 
 ## 2. Хранилище
 
