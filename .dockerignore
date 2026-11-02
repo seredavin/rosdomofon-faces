@@ -1,0 +1,10 @@
+.git
+.venv
+.claude
+.github
+data
+models
+openspec
+tests
+__pycache__
+*.pyc

@@ -4,7 +4,25 @@
 просмотр камер в браузере, поиск и распознавание лиц (YuNet + SFace / OpenCV),
 галерея незнакомых лиц, база знакомых людей и журнал появлений у двери.
 
-## Запуск
+## Docker
+
+Образ собирается в GitHub Actions для `linux/amd64` и `linux/arm64` и
+публикуется в GHCR: `latest` — из `main`, `sha-…` — на каждый коммит, `X.Y.Z` —
+по тегу `vX.Y.Z`. Модели и шрифт уже внутри образа.
+
+```bash
+docker run -d --name rosdomofon-faces --restart unless-stopped \
+  -p 127.0.0.1:8000:8000 \
+  -v rosdomofon-faces-data:/app/data \
+  -e ROSDOMOFON_MONITOR_CAMERAS=1001 \
+  ghcr.io/seredavin/rosdomofon-faces:latest
+```
+
+Порт публикуется только на `127.0.0.1`: своей авторизации у сервиса нет, а через
+него можно открыть дверь подъезда. Для доступа с других устройств — reverse
+proxy с авторизацией или VPN. Данные (токены, база лиц) — в томе `/app/data`.
+
+## Запуск без Docker
 
 ```bash
 python3.13 -m venv .venv
