@@ -183,3 +183,68 @@ def test_cleanup_removes_old_orphan_files_only(store, tmp_path):
     assert not old_orphan.exists()
     assert new_orphan.exists()
     assert linked.exists()
+
+
+# --- Открытие двери: миграция, разрешения, режим, привязки ---
+
+def test_migrates_database_from_first_schema(tmp_path):
+    import sqlite3
+    db = tmp_path / "old.db"
+    conn = sqlite3.connect(db)
+    conn.executescript("""
+        CREATE TABLE persons (id INTEGER PRIMARY KEY, name TEXT NOT NULL UNIQUE, created_at REAL NOT NULL);
+        CREATE TABLE events (id INTEGER PRIMARY KEY, camera_id INTEGER NOT NULL, started_at REAL NOT NULL,
+            ended_at REAL NOT NULL, person_id INTEGER, image TEXT NOT NULL, embedding BLOB);
+        INSERT INTO persons(name, created_at) VALUES ('Кирилл', 0);
+        INSERT INTO events(camera_id, started_at, ended_at, person_id, image) VALUES (1, 0, 1, 1, 'a.jpg');
+    """)
+    conn.close()
+
+    s = Store(db, tmp_path / "faces")
+    try:
+        person = s.list_persons()[0]
+        assert person["name"] == "Кирилл" and person["can_unlock"] is False
+        assert s.list_events()[0][0]["unlock"] is None
+        assert s.unlock_mode() == "dry_run"
+    finally:
+        s.close()
+    # Повторное открытие уже мигрированной БД — без ошибок
+    Store(db, tmp_path / "faces").close()
+
+
+def test_can_unlock_flag(store):
+    person_id = store.create_person("Кирилл")
+    assert store.can_unlock(person_id) is False
+    store.set_can_unlock(person_id, True)
+    assert store.can_unlock(person_id) is True
+    assert store.list_persons()[0]["can_unlock"] is True
+    assert store.can_unlock(999) is False
+    with pytest.raises(NotFound):
+        store.set_can_unlock(999, True)
+
+
+def test_unlock_mode(store):
+    assert store.unlock_mode() == "dry_run"
+    store.set_unlock_mode("on")
+    assert store.unlock_mode() == "on"
+    with pytest.raises(Invalid):
+        store.set_unlock_mode("always")
+
+
+def test_camera_doors(store):
+    assert store.camera_doors() == {}
+    store.set_camera_door(1001, ("aabbccddeeff", 1, "Дверь подъезда"))
+    store.set_camera_door(1001, ("aabbccddeeff", 2, "Калитка"))
+    assert store.camera_doors() == {
+        1001: {"id": "aabbccddeeff:2", "adapter_id": "aabbccddeeff", "relay": 2, "name": "Калитка"},
+    }
+    store.set_camera_door(1001, None)
+    assert store.camera_doors() == {}
+
+
+def test_unlock_result_on_event_and_filter(store):
+    person_id = store.create_person("Кирилл")
+    store.add_event(1001, 0, 1, person_id, b"j", None, unlock="would_open")
+    store.add_event(1001, 2, 3, person_id, b"j", None)
+    events, _ = store.list_events(unlocked=True)
+    assert [e["unlock"] for e in events] == ["would_open"]

@@ -155,3 +155,20 @@ def test_final_person_follows_decision():
     for i, vote in enumerate([7, 7, 7]):
         t.add_vote(vote, now=i)
     assert t.final_person() == 7
+
+
+def test_confirmed_person_survives_unknown_votes():
+    """Узнали, открыли дверь, человек отвернулся — имя остаётся (баг из проверки 6.3)."""
+    t = _track()
+    votes = [7, 7, 7] + [None] * 30
+    for i, vote in enumerate(votes):
+        t.add_vote(vote, now=i)
+    assert (t.status, t.person_id) == (KNOWN, 7)
+    assert t.final_person() == 7
+
+
+def test_confirmed_person_can_switch_to_other_person():
+    t = _track()
+    for i, vote in enumerate([7, 7, 7, 3, 3, 3, 3, 3]):
+        t.add_vote(vote, now=i)
+    assert t.person_id == 3

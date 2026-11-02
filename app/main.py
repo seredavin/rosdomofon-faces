@@ -13,14 +13,16 @@ from pydantic import BaseModel
 from . import config
 from .detector import ensure_models
 from .rosdomofon import AuthError, RosdomofonClient, normalize_phone
-from .store import Conflict, Invalid, NotFound, Store, StoreError
+from .store import UNLOCK_MODES, Conflict, Invalid, NotFound, Store, StoreError
 from .stream import WorkerRegistry
+from .unlock import DoorUnlocker
 
 _LOGGER = logging.getLogger(__name__)
 
 client = RosdomofonClient()
 store = Store()
-workers = WorkerRegistry(client, store)
+unlocker = DoorUnlocker(client, store)
+workers = WorkerRegistry(client, store, unlocker)
 
 
 def _start_monitoring() -> None:
@@ -71,6 +73,17 @@ class RefreshTokenIn(BaseModel):
 
 class PersonIn(BaseModel):
     name: str
+
+
+class PersonPatch(BaseModel):
+    name: str | None = None
+    can_unlock: bool | None = None
+
+
+class UnlockIn(BaseModel):
+    mode: str | None = None
+    # {camera_id: id двери "<adapterId>:<relay>" или null — отвязать}
+    bindings: dict[int, str | None] | None = None
 
 
 class AssignIn(BaseModel):
@@ -192,6 +205,7 @@ def events(
     person_id: int | None = None,
     unknown: bool = False,
     gallery: bool = False,
+    unlocked: bool = False,
     since: float | None = None,
     until: float | None = None,
     before_id: int | None = None,
@@ -199,7 +213,7 @@ def events(
 ):
     items, next_before_id = store.list_events(
         camera_id=camera_id, person_id=person_id, unknown=unknown, gallery=gallery,
-        since=since, until=until, before_id=before_id, limit=limit,
+        unlocked=unlocked, since=since, until=until, before_id=before_id, limit=limit,
     )
     return {"items": items, "next_before_id": next_before_id}
 
@@ -234,8 +248,11 @@ def create_person(body: PersonIn):
 
 
 @app.patch("/api/persons/{person_id}")
-def rename_person(person_id: int, body: PersonIn):
-    _call(store.rename_person, person_id, body.name)
+def update_person(person_id: int, body: PersonPatch):
+    if body.name is not None:
+        _call(store.rename_person, person_id, body.name)
+    if body.can_unlock is not None:
+        _call(store.set_can_unlock, person_id, body.can_unlock)
     return {"ok": True}
 
 
@@ -254,6 +271,42 @@ def delete_sample(sample_id: int):
 @app.get("/api/samples/{sample_id}/image")
 def sample_image(sample_id: int):
     return _image(_call(store.sample_image, sample_id))
+
+
+# --- Открытие двери ---
+
+@app.get("/api/doors")
+def doors():
+    return [{"id": d.id, "name": d.name} for d in _call(client.doors)]
+
+
+@app.get("/api/unlock")
+def unlock_settings():
+    bindings = {cid: {"id": d["id"], "name": d["name"]} for cid, d in store.camera_doors().items()}
+    return {"mode": store.unlock_mode(), "bindings": bindings}
+
+
+@app.put("/api/unlock")
+def update_unlock_settings(body: UnlockIn):
+    """Частичное обновление; сначала всё проверяется, потом применяется."""
+    if body.mode is not None and body.mode not in UNLOCK_MODES:
+        raise HTTPException(400, f"Неизвестный режим: {body.mode}")
+    resolved: dict[int, tuple[str, int, str] | None] = {}
+    if body.bindings:
+        known = {d.id: d for d in _call(client.doors)} if any(body.bindings.values()) else {}
+        for camera_id, door_id in body.bindings.items():
+            if door_id is None:
+                resolved[camera_id] = None
+                continue
+            door = known.get(door_id)
+            if door is None:
+                raise HTTPException(400, f"Дверь {door_id} не найдена в аккаунте")
+            resolved[camera_id] = (door.adapter_id, door.relay, door.name)
+    if body.mode is not None:
+        store.set_unlock_mode(body.mode)
+    for camera_id, door in resolved.items():
+        store.set_camera_door(camera_id, door)
+    return unlock_settings()
 
 
 @app.get("/")

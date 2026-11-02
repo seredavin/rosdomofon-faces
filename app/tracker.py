@@ -38,6 +38,9 @@ class Track:
     best_score: float = -1.0
     best_image: bytes | None = None
     best_embedding: np.ndarray | None = None
+    # Результат автоматического открытия двери; проверка — один раз за появление
+    unlock_result: str | None = None
+    unlock_checked: bool = False
 
     @property
     def had_usable_face(self) -> bool:
@@ -51,7 +54,10 @@ class Track:
         """Голос «человек person_id» или «незнакомый» (None); пересчитывает статус.
 
         Статус — большинство среди последних VOTE_WINDOW голосов, но не раньше
-        VOTE_MIN голосов. При равенстве остаётся прежнее решение.
+        VOTE_MIN голосов. При равенстве остаётся прежнее решение. Подтверждённого
+        человека голоса «незнакомый» не отменяют: они означают лишь, что лицо
+        не совпало (например, человек отвернулся), — сменить имя может только
+        устойчивое большинство за другого человека.
         """
         self.last_recognized = now
         self.votes.append(person_id)
@@ -61,6 +67,8 @@ class Track:
         if len(ranked) > 1 and ranked[0][1] == ranked[1][1]:
             return
         winner = ranked[0][0]
+        if winner is None and self.status == KNOWN:
+            return
         self.person_id = winner
         self.status = UNKNOWN if winner is None else KNOWN
 

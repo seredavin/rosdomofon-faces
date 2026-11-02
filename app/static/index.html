@@ -37,6 +37,11 @@
   table { width: 100%; border-collapse: collapse; }
   td { padding: 6px; border-bottom: 1px solid #8883; vertical-align: middle; }
   td img { width: 56px; height: 56px; object-fit: cover; border-radius: 4px; }
+  .badge { padding: 2px 8px; border-radius: 10px; font-size: 13px; white-space: nowrap; }
+  .badge.opened { background: #2a7; color: #fff; } .badge.would_open { background: #8884; } .badge.failed { background: #d33; color: #fff; }
+  .modes label { display: block; margin: 6px 0; }
+  .warning { border-left: 4px solid #f80; padding: 8px 12px; background: #f801; margin: 10px 0; }
+  .doors td { padding: 8px 6px; }
   .error { color: #d33; }
 </style>
 </head>
@@ -75,6 +80,7 @@
     <button data-tab="gallery">Незнакомые</button>
     <button data-tab="people">Люди</button>
     <button data-tab="journal">Журнал</button>
+    <button data-tab="doors">Двери</button>
   </nav>
 
   <div id="tab-video">
@@ -106,10 +112,27 @@
       <select id="j-person"></select>
       <label>с <input id="j-since" type="datetime-local"></label>
       <label>по <input id="j-until" type="datetime-local"></label>
+      <label><input id="j-unlocked" type="checkbox"> только с открытием</label>
       <button>Показать</button>
     </form>
     <table><tbody id="journal"></tbody></table>
     <div class="row"><button id="journal-more" class="hidden">Показать ещё</button></div>
+  </div>
+  <div id="tab-doors" class="hidden">
+    <h3>Режим автоматического открытия</h3>
+    <div class="modes">
+      <label><input type="radio" name="mode" value="off"> Выключено — ничего не делать</label>
+      <label><input type="radio" name="mode" value="dry_run"> Только журнал — записывать «открыл бы», дверь не трогать</label>
+      <label><input type="radio" name="mode" value="on"> Открывать дверь</label>
+    </div>
+    <div class="warning">
+      Дверь открывается людям с разрешением «может открывать дверь» (вкладка «Люди»), не чаще раза
+      в 30 секунд. Распознавание <b>не защищено от фото на телефоне</b> и иногда ошибается.
+      Прежде чем включать «Открывать», проверьте по журналу (фильтр «только с открытием»), что
+      «открыл бы» не срабатывает на чужих.
+    </div>
+    <h3>Какую дверь открывает камера</h3>
+    <table class="doors"><tbody id="door-bindings"></tbody></table>
   </div>
 </section>
 
@@ -197,7 +220,7 @@ async function showMain() {
 function switchMainTab(tab) {
   activeTab = tab;
   document.querySelectorAll("#nav button").forEach((b) => b.classList.toggle("active", b.dataset.tab === tab));
-  for (const name of ["video", "gallery", "people", "journal"]) {
+  for (const name of ["video", "gallery", "people", "journal", "doors"]) {
     $(`tab-${name}`).classList.toggle("hidden", name !== tab);
   }
   // Видео держим открытым только на своей вкладке — без зрителя сервер не кодирует кадры
@@ -210,6 +233,7 @@ function switchMainTab(tab) {
   if (tab === "gallery") loadGallery(true);
   if (tab === "people") renderPeople();
   if (tab === "journal") loadJournal(true);
+  if (tab === "doors") loadDoors();
 }
 document.querySelectorAll("#nav button").forEach((b) => b.onclick = guarded(() => switchMainTab(b.dataset.tab)));
 
@@ -285,8 +309,16 @@ function renderPeople() {
       return el("div", { className: "sample" },
         el("img", { src: `/api/samples/${s.id}/image`, title: fmtTime(s.created_at), loading: "lazy" }), del);
     });
+    const allow = el("input", { type: "checkbox", checked: p.can_unlock });
+    allow.onchange = guarded(async () => {
+      try {
+        await api(`/api/persons/${p.id}`, { method: "PATCH", body: { can_unlock: allow.checked } });
+        p.can_unlock = allow.checked;
+      } catch (err) { allow.checked = p.can_unlock; throw err; }
+    });
     return el("div", { className: "person" },
       el("h3", {}, p.name, el("span", { className: "muted", textContent: `образцов: ${p.samples.length}` }), rename, remove),
+      el("label", { className: "row" }, allow, "может открывать дверь"),
       samples.length ? el("div", { className: "samples" }, ...samples)
                      : el("p", { className: "muted", textContent: "Нет образцов — человек не будет распознаваться." }));
   }));
@@ -351,6 +383,8 @@ $("gallery-more").onclick = guarded(() => loadGallery(false));
 
 // --- Журнал ---
 
+const UNLOCK_TEXT = { opened: "дверь открыта", would_open: "открыл бы", failed: "ошибка открытия" };
+
 function journalRow(ev) {
   const who = ev.person_name
     ? el("span", { className: "chip known", textContent: ev.person_name })
@@ -360,7 +394,8 @@ function journalRow(ev) {
     el("td", {}, who),
     el("td", { textContent: fmtTime(ev.started_at) }),
     el("td", { className: "muted", textContent: fmtDuration(ev.ended_at - ev.started_at) }),
-    el("td", { textContent: cameraNames[ev.camera_id] || ev.camera_id }));
+    el("td", { textContent: cameraNames[ev.camera_id] || ev.camera_id }),
+    el("td", {}, ev.unlock ? el("span", { className: `badge ${ev.unlock}`, textContent: UNLOCK_TEXT[ev.unlock] }) : null));
 }
 
 async function loadJournal(reset) {
@@ -372,6 +407,7 @@ async function loadJournal(reset) {
   else if (person) params.set("person_id", person);
   if ($("j-since").value) params.set("since", new Date($("j-since").value).getTime() / 1000);
   if ($("j-until").value) params.set("until", new Date($("j-until").value).getTime() / 1000);
+  if ($("j-unlocked").checked) params.set("unlocked", "true");
   if (journalCursor) params.set("before_id", journalCursor);
   const page = await api(`/api/events?${params}`);
   $("journal").append(...page.items.map(journalRow));
@@ -383,6 +419,38 @@ async function loadJournal(reset) {
 }
 $("form-journal").onsubmit = guarded(async (e) => { e.preventDefault(); await loadJournal(true); });
 $("journal-more").onclick = guarded(() => loadJournal(false));
+
+// --- Двери ---
+
+async function loadDoors() {
+  const [settings, doors] = await Promise.all([api("/api/unlock"), api("/api/doors")]);
+  document.querySelectorAll('input[name="mode"]').forEach((r) => { r.checked = r.value === settings.mode; });
+  $("door-bindings").replaceChildren(...Object.entries(cameraNames).map(([cameraId, cameraName]) => {
+    const bound = settings.bindings[cameraId];
+    const select = el("select", {},
+      el("option", { value: "", textContent: "— не открывать —" }),
+      ...doors.map((d) => el("option", { value: d.id, textContent: `${d.name} (${d.id})` })));
+    // Привязанная дверь могла пропасть из аккаунта — всё равно показываем её
+    if (bound && !doors.some((d) => d.id === bound.id)) {
+      select.append(el("option", { value: bound.id, textContent: `${bound.name} (нет в аккаунте)` }));
+    }
+    select.value = bound ? bound.id : "";
+    select.onchange = guarded(async () => {
+      await api("/api/unlock", { method: "PUT", body: { bindings: { [cameraId]: select.value || null } } });
+    });
+    return el("tr", {}, el("td", { textContent: cameraName }), el("td", {}, select));
+  }));
+}
+
+document.querySelectorAll('input[name="mode"]').forEach((radio) => {
+  radio.onchange = guarded(async () => {
+    if (radio.value === "on" && !confirm("Включить автоматическое открытие двери подъезда?")) {
+      await loadDoors();
+      return;
+    }
+    await api("/api/unlock", { method: "PUT", body: { mode: radio.value } });
+  });
+});
 
 // --- Формы входа ---
 

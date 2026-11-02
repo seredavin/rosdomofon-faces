@@ -93,3 +93,53 @@ def test_status_without_login(api, monkeypatch):
     resp = api.get("/api/status").json()
     assert resp["authorized"] is False
     assert api.get("/api/cameras").status_code == 401
+
+
+# --- Открытие двери ---
+
+from app.rosdomofon import Door  # noqa: E402
+
+DOORS = [Door("aabbccddeeff", 1, "Дверь подъезда"), Door("aabbccddeeff", 2, "Калитка")]
+
+
+@pytest.fixture
+def doors(monkeypatch):
+    monkeypatch.setattr(main.client, "doors", lambda: DOORS)
+
+
+def test_doors_and_unlock_settings(api, doors):
+    assert api.get("/api/doors").json() == [
+        {"id": "aabbccddeeff:1", "name": "Дверь подъезда"},
+        {"id": "aabbccddeeff:2", "name": "Калитка"},
+    ]
+    assert api.get("/api/unlock").json() == {"mode": "dry_run", "bindings": {}}
+
+    resp = api.put("/api/unlock", json={"mode": "on", "bindings": {"1001": "aabbccddeeff:2"}})
+    assert resp.json() == {"mode": "on", "bindings": {"1001": {"id": "aabbccddeeff:2", "name": "Калитка"}}}
+
+    resp = api.put("/api/unlock", json={"bindings": {"1001": None}})
+    assert resp.json() == {"mode": "on", "bindings": {}}
+
+
+def test_unlock_settings_errors(api, doors):
+    assert api.put("/api/unlock", json={"mode": "always"}).status_code == 400
+    # Неверная дверь — запрос отклонён целиком, режим тоже не меняется
+    assert api.put("/api/unlock", json={"mode": "on", "bindings": {"1001": "nope:1"}}).status_code == 400
+    assert api.get("/api/unlock").json()["mode"] == "dry_run"
+
+
+def test_person_can_unlock_flag(api):
+    person_id = api.post("/api/persons", json={"name": "Кирилл"}).json()["id"]
+    assert api.get("/api/persons").json()[0]["can_unlock"] is False
+    assert api.patch(f"/api/persons/{person_id}", json={"can_unlock": True}).status_code == 200
+    person = api.get("/api/persons").json()[0]
+    assert person["can_unlock"] is True and person["name"] == "Кирилл"
+    assert api.patch("/api/persons/999", json={"can_unlock": True}).status_code == 404
+
+
+def test_events_unlocked_filter(api, store):
+    person_id = store.create_person("Кирилл")
+    store.add_event(1001, 0, 1, person_id, b"j", None, unlock="opened")
+    store.add_event(1001, 2, 3, person_id, b"j", None)
+    items = api.get("/api/events", params={"unlocked": True}).json()["items"]
+    assert [e["unlock"] for e in items] == ["opened"]

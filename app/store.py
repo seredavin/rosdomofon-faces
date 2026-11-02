@@ -42,10 +42,34 @@ CREATE TABLE IF NOT EXISTS events (
     image      TEXT NOT NULL,
     embedding  BLOB
 );
+CREATE TABLE IF NOT EXISTS settings (
+    key   TEXT PRIMARY KEY,
+    value TEXT NOT NULL
+);
+CREATE TABLE IF NOT EXISTS camera_doors (
+    camera_id  INTEGER PRIMARY KEY,
+    adapter_id TEXT NOT NULL,
+    relay      INTEGER NOT NULL,
+    door_name  TEXT NOT NULL
+);
 CREATE INDEX IF NOT EXISTS events_started ON events(started_at);
 CREATE INDEX IF NOT EXISTS events_person ON events(person_id);
 CREATE INDEX IF NOT EXISTS samples_person ON samples(person_id);
 """
+
+# Столбцы, добавленные после первой версии схемы: (таблица, столбец, определение)
+_MIGRATIONS = [
+    ("persons", "can_unlock", "INTEGER NOT NULL DEFAULT 0"),
+    ("events", "unlock", "TEXT"),
+]
+
+# Режимы автоматического открытия двери
+UNLOCK_OFF = "off"
+UNLOCK_DRY_RUN = "dry_run"
+UNLOCK_ON = "on"
+UNLOCK_MODES = (UNLOCK_OFF, UNLOCK_DRY_RUN, UNLOCK_ON)
+# Результаты открытия у события
+UNLOCK_RESULTS = ("would_open", "opened", "failed")
 
 
 class StoreError(Exception):
@@ -96,6 +120,7 @@ class Store:
         self._db.execute("PRAGMA journal_mode=WAL")
         self._db.execute("PRAGMA foreign_keys=ON")
         self._db.executescript(_SCHEMA)
+        self._migrate()
         # Версия базы образцов: растёт при любом изменении людей/образцов
         self._version = 0
 
@@ -112,14 +137,28 @@ class Store:
     def list_persons(self) -> list[dict]:
         with self._lock:
             persons = [dict(r) for r in self._db.execute(
-                "SELECT id, name, created_at FROM persons ORDER BY name COLLATE NOCASE"
+                "SELECT id, name, created_at, can_unlock FROM persons ORDER BY name COLLATE NOCASE"
             )]
             samples: dict[int, list[dict]] = {}
             for r in self._db.execute("SELECT id, person_id, created_at FROM samples ORDER BY id"):
                 samples.setdefault(r["person_id"], []).append({"id": r["id"], "created_at": r["created_at"]})
         for person in persons:
+            person["can_unlock"] = bool(person["can_unlock"])
             person["samples"] = samples.get(person["id"], [])
         return persons
+
+    def set_can_unlock(self, person_id: int, allowed: bool) -> None:
+        with self._lock:
+            cur = self._db.execute(
+                "UPDATE persons SET can_unlock = ? WHERE id = ?", (int(allowed), person_id)
+            )
+        if cur.rowcount == 0:
+            raise NotFound("Человек не найден")
+
+    def can_unlock(self, person_id: int) -> bool:
+        with self._lock:
+            row = self._db.execute("SELECT can_unlock FROM persons WHERE id = ?", (person_id,)).fetchone()
+        return bool(row and row["can_unlock"])
 
     def create_person(self, name: str) -> int:
         name = self._clean_name(name)
@@ -198,6 +237,7 @@ class Store:
         person_id: int | None,
         image_jpeg: bytes,
         embedding: np.ndarray | None,
+        unlock: str | None = None,
     ) -> int:
         """Записывает событие. Вектор хранится только у событий незнакомых."""
         image = f"{uuid.uuid4().hex}.jpg"
@@ -206,16 +246,16 @@ class Store:
         with self._lock:
             try:
                 cur = self._db.execute(
-                    "INSERT INTO events(camera_id, started_at, ended_at, person_id, image, embedding)"
-                    " VALUES (?, ?, ?, ?, ?, ?)",
-                    (camera_id, started_at, ended_at, person_id, image, blob),
+                    "INSERT INTO events(camera_id, started_at, ended_at, person_id, image, embedding, unlock)"
+                    " VALUES (?, ?, ?, ?, ?, ?, ?)",
+                    (camera_id, started_at, ended_at, person_id, image, blob, unlock),
                 )
             except sqlite3.IntegrityError:
                 # Человека удалили, пока шло появление — пишем как незнакомого без вектора
                 cur = self._db.execute(
-                    "INSERT INTO events(camera_id, started_at, ended_at, person_id, image, embedding)"
-                    " VALUES (?, ?, ?, NULL, ?, NULL)",
-                    (camera_id, started_at, ended_at, image),
+                    "INSERT INTO events(camera_id, started_at, ended_at, person_id, image, embedding, unlock)"
+                    " VALUES (?, ?, ?, NULL, ?, NULL, ?)",
+                    (camera_id, started_at, ended_at, image, unlock),
                 )
             return cur.lastrowid
 
@@ -226,6 +266,7 @@ class Store:
         person_id: int | None = None,
         unknown: bool = False,
         gallery: bool = False,
+        unlocked: bool = False,
         since: float | None = None,
         until: float | None = None,
         before_id: int | None = None,
@@ -246,6 +287,8 @@ class Store:
             where.append("e.person_id IS NULL")
         if gallery:
             where.append("e.embedding IS NOT NULL")
+        if unlocked:
+            where.append("e.unlock IS NOT NULL")
         if since is not None:
             where.append("e.started_at >= ?")
             args.append(since)
@@ -257,7 +300,7 @@ class Store:
             args.append(before_id)
         sql = (
             "SELECT e.id, e.camera_id, e.started_at, e.ended_at, e.person_id, p.name AS person_name,"
-            " e.embedding IS NOT NULL AS assignable"
+            " e.embedding IS NOT NULL AS assignable, e.unlock"
             " FROM events e LEFT JOIN persons p ON p.id = e.person_id"
             + (" WHERE " + " AND ".join(where) if where else "")
             + " ORDER BY e.id DESC LIMIT ?"
@@ -330,6 +373,51 @@ class Store:
             self._version += 1
             return person_id
 
+    # --- Открытие двери: режим и привязки камер ---
+
+    def unlock_mode(self) -> str:
+        with self._lock:
+            row = self._db.execute("SELECT value FROM settings WHERE key = 'unlock_mode'").fetchone()
+        return row["value"] if row else UNLOCK_DRY_RUN
+
+    def set_unlock_mode(self, mode: str) -> None:
+        if mode not in UNLOCK_MODES:
+            raise Invalid(f"Неизвестный режим: {mode}")
+        with self._lock:
+            self._db.execute(
+                "INSERT INTO settings(key, value) VALUES ('unlock_mode', ?)"
+                " ON CONFLICT(key) DO UPDATE SET value = excluded.value",
+                (mode,),
+            )
+
+    def camera_doors(self) -> dict[int, dict]:
+        """Привязки камер к дверям: {camera_id: {id, adapter_id, relay, name}}."""
+        with self._lock:
+            rows = self._db.execute("SELECT * FROM camera_doors").fetchall()
+        return {
+            r["camera_id"]: {
+                "id": f"{r['adapter_id']}:{r['relay']}",
+                "adapter_id": r["adapter_id"],
+                "relay": r["relay"],
+                "name": r["door_name"],
+            }
+            for r in rows
+        }
+
+    def set_camera_door(self, camera_id: int, door: tuple[str, int, str] | None) -> None:
+        """Привязывает камеру к двери (adapter_id, relay, название) или отвязывает (None)."""
+        with self._lock:
+            if door is None:
+                self._db.execute("DELETE FROM camera_doors WHERE camera_id = ?", (camera_id,))
+                return
+            adapter_id, relay, name = door
+            self._db.execute(
+                "INSERT INTO camera_doors(camera_id, adapter_id, relay, door_name) VALUES (?, ?, ?, ?)"
+                " ON CONFLICT(camera_id) DO UPDATE SET adapter_id = excluded.adapter_id,"
+                " relay = excluded.relay, door_name = excluded.door_name",
+                (camera_id, adapter_id, relay, name),
+            )
+
     # --- Очистка ---
 
     def cleanup(
@@ -358,6 +446,14 @@ class Store:
         return len(expired)
 
     # --- Внутреннее ---
+
+    def _migrate(self) -> None:
+        """Добавляет столбцы, появившиеся после первой версии схемы."""
+        for table, column, definition in _MIGRATIONS:
+            existing = {r["name"] for r in self._db.execute(f"PRAGMA table_info({table})")}
+            if column not in existing:
+                _LOGGER.info("Миграция БД: %s.%s", table, column)
+                self._db.execute(f"ALTER TABLE {table} ADD COLUMN {column} {definition}")
 
     @staticmethod
     def _remove_orphans(directory: Path, used: set[str], now: float) -> None:

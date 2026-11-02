@@ -34,6 +34,25 @@ class Camera:
         return f"https://{self.stream_host}/live/{self.id}.m3u8"
 
 
+# Тип ключа Росдомофона → название двери
+_DOOR_TYPES = {1: "Дверь подъезда", 2: "Шлагбаум", 3: "Ворота", 4: "Калитка"}
+
+
+@dataclass(frozen=True)
+class Door:
+    adapter_id: str
+    relay: int
+    name: str
+
+    @property
+    def id(self) -> str:
+        return f"{self.adapter_id}:{self.relay}"
+
+
+class DoorError(Exception):
+    """Росдомофон не открыл дверь."""
+
+
 def normalize_phone(raw_phone: str) -> str:
     """Приводит номер к формату 7XXXXXXXXXX (как в HA-интеграции)."""
     digits = re.sub(r"\D", "", raw_phone)
@@ -140,6 +159,30 @@ class RosdomofonClient:
         self._cameras = cameras
         return list(cameras.values())
 
+    # --- Двери ---
+
+    def doors(self) -> list[Door]:
+        """Ключи аккаунта (двери, шлагбаумы, ворота, калитки)."""
+        doors = []
+        for item in self._authorized_get(config.KEYS_LIST_URL).json():
+            if item.get("adapterId") is None or item.get("relay") is None:
+                continue
+            name = _DOOR_TYPES.get(item.get("type"), f"Замок {item.get('type')}")
+            doors.append(Door(adapter_id=str(item["adapterId"]), relay=int(item["relay"]), name=name))
+        return doors
+
+    def open_door(self, adapter_id: str, relay: int) -> None:
+        """Открывает дверь; при отказе или сбое сети — DoorError."""
+        url = config.OPEN_DOOR_URL.format(adapter_id=adapter_id)
+        try:
+            resp = self._post_json(url, {"rele": relay}, self.access_token())
+            if resp.status_code == 401:
+                resp = self._post_json(url, {"rele": relay}, self.access_token(force_refresh=True))
+        except httpx.HTTPError as exc:
+            raise DoorError(f"Росдомофон недоступен: {exc}") from exc
+        if resp.status_code != 200:
+            raise DoorError(f"Росдомофон отказал: HTTP {resp.status_code} {resp.text[:200]}")
+
     def camera(self, camera_id: int) -> Camera | None:
         if camera_id not in self._cameras:
             self.cameras()
@@ -155,6 +198,11 @@ class RosdomofonClient:
             )
         resp.raise_for_status()
         return resp
+
+    def _post_json(self, url: str, body: dict, token: str) -> httpx.Response:
+        return self._http.post(
+            url, json=body, headers={"Authorization": f"Bearer {token}"}, timeout=config.UNLOCK_TIMEOUT
+        )
 
     def _token_request(self, payload: dict) -> dict:
         resp = self._http.post(config.TOKEN_REQUEST_URL, data=payload)
