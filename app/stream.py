@@ -11,6 +11,7 @@ from . import config
 from .pipeline import FacePipeline
 from .rosdomofon import AuthError, Camera, RosdomofonClient
 from .store import Store
+from .unlock import DoorUnlocker
 
 _LOGGER = logging.getLogger(__name__)
 
@@ -63,11 +64,17 @@ class CameraWorker(threading.Thread):
     """
 
     def __init__(
-        self, client: RosdomofonClient, store: Store, camera: Camera, persistent: bool = False
+        self,
+        client: RosdomofonClient,
+        store: Store,
+        camera: Camera,
+        persistent: bool = False,
+        unlocker: DoorUnlocker | None = None,
     ) -> None:
         super().__init__(name=f"camera-{camera.id}", daemon=True)
         self._client = client
         self._store = store
+        self._unlocker = unlocker
         self.camera = camera
         self.persistent = persistent
         self._pipeline: FacePipeline | None = None
@@ -123,7 +130,7 @@ class CameraWorker(threading.Thread):
 
     def run(self) -> None:
         try:
-            self._pipeline = FacePipeline(self.camera.id, self._store)
+            self._pipeline = FacePipeline(self.camera.id, self._store, unlocker=self._unlocker)
         except Exception as exc:  # noqa: BLE001 — например, не скачалась модель
             _LOGGER.exception("Камера %s: не удалось создать конвейер", self.camera.id)
             self._error = f"Ошибка запуска анализа: {exc}"
@@ -229,9 +236,10 @@ class CameraWorker(threading.Thread):
 class WorkerRegistry:
     """Воркеры камер: постоянные для мониторинга и по требованию для просмотра."""
 
-    def __init__(self, client: RosdomofonClient, store: Store) -> None:
+    def __init__(self, client: RosdomofonClient, store: Store, unlocker: DoorUnlocker | None = None) -> None:
         self._client = client
         self._store = store
+        self._unlocker = unlocker
         self._workers: dict[int, CameraWorker] = {}
         self._lock = threading.Lock()
 
@@ -271,7 +279,7 @@ class WorkerRegistry:
         with self._lock:
             worker = self._workers.get(camera.id)
             if worker is None or worker.stopped:
-                worker = CameraWorker(self._client, self._store, camera, persistent)
+                worker = CameraWorker(self._client, self._store, camera, persistent, self._unlocker)
                 self._workers[camera.id] = worker
                 worker.start()
             elif persistent:

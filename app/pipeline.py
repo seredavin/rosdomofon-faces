@@ -13,6 +13,7 @@ from .quality import geometry_reason, is_sharp, quality_score, sharpness
 from .recognizer import Recognizer
 from .store import Store
 from .tracker import KNOWN, PENDING, Track, Tracker
+from .unlock import DoorUnlocker
 
 _LOGGER = logging.getLogger(__name__)
 
@@ -46,11 +47,13 @@ class FacePipeline:
         store: Store,
         detector: FaceDetector | None = None,
         recognizer: Recognizer | None = None,
+        unlocker: DoorUnlocker | None = None,
     ) -> None:
         self._camera_id = camera_id
         self._store = store
         self._detector = detector or FaceDetector()
         self._recognizer = recognizer or Recognizer(store)
+        self._unlocker = unlocker
         self._tracker = Tracker()
         self._last_detect = -1e9
         self._visible: list[Track] = []
@@ -106,9 +109,22 @@ class FacePipeline:
         embedding = self._recognizer.embed(aligned)
         person_id, _similarity = self._recognizer.match(embedding)
         track.add_vote(person_id, now)
+        if track.status == KNOWN and not track.unlock_checked:
+            self._maybe_unlock(track)
         score = quality_score(track.face, sharp)
         if score > track.best_score:
             track.offer_best(score, crop_snapshot(frame, track.face), embedding)
+
+    def _maybe_unlock(self, track: Track) -> None:
+        """Один раз за появление — при первом переходе в статус «знакомый»."""
+        track.unlock_checked = True
+        if self._unlocker is None:
+            return
+        try:
+            track.unlock_result = self._unlocker.try_unlock(self._camera_id, track.person_id)
+        except Exception:  # noqa: BLE001 — сбой открытия не должен ронять анализ камеры
+            _LOGGER.exception("Камера %s: ошибка при открытии двери", self._camera_id)
+            track.unlock_result = "failed"
 
     def _finish(self, track: Track) -> None:
         if not track.had_usable_face:
@@ -117,7 +133,7 @@ class FacePipeline:
         try:
             event_id = self._store.add_event(
                 self._camera_id, track.started_at, track.ended_at,
-                person_id, track.best_image, track.best_embedding,
+                person_id, track.best_image, track.best_embedding, track.unlock_result,
             )
         except Exception:  # noqa: BLE001 — сбой записи не должен ронять анализ камеры
             _LOGGER.exception("Камера %s: не удалось записать событие", self._camera_id)
@@ -143,4 +159,5 @@ class FacePipeline:
             "score": face.score,
             "status": track.status,
             "person": person,
+            "unlock": track.unlock_result,
         }

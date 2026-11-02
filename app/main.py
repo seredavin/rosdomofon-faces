@@ -15,12 +15,14 @@ from .detector import ensure_models
 from .rosdomofon import AuthError, RosdomofonClient, normalize_phone
 from .store import Conflict, Invalid, NotFound, Store, StoreError
 from .stream import WorkerRegistry
+from .unlock import DoorUnlocker
 
 _LOGGER = logging.getLogger(__name__)
 
 client = RosdomofonClient()
 store = Store()
-workers = WorkerRegistry(client, store)
+unlocker = DoorUnlocker(client, store)
+workers = WorkerRegistry(client, store, unlocker)
 
 
 def _start_monitoring() -> None:

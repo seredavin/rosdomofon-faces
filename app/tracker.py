@@ -38,6 +38,9 @@ class Track:
     best_score: float = -1.0
     best_image: bytes | None = None
     best_embedding: np.ndarray | None = None
+    # Результат автоматического открытия двери; проверка — один раз за появление
+    unlock_result: str | None = None
+    unlock_checked: bool = False
 
     @property
     def had_usable_face(self) -> bool:
