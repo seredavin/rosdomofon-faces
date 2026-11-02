@@ -11,6 +11,12 @@ WORKDIR /app
 COPY requirements.txt .
 RUN pip install -r requirements.txt
 
+# ffmpeg из колёс PyAV собран со своим GnuTLS, который ищет корневые сертификаты
+# по пути RHEL (/etc/pki/tls/cert.pem), а в Debian они в /etc/ssl/certs. Без
+# ссылки любое HTTPS-видео падает с «Input/output error» (сертификат не проверен).
+RUN mkdir -p /etc/pki/tls \
+    && ln -s /etc/ssl/certs/ca-certificates.crt /etc/pki/tls/cert.pem
+
 COPY app ./app
 
 # Модели (YuNet, SFace) и шрифт подписей скачиваются при сборке с проверкой
