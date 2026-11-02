@@ -53,6 +53,17 @@ jobs:
           done
           docker logs app
           exit 1
+      - name: Smoke test — HTTPS в ffmpeg
+        # Видео камер — HLS по HTTPS; ffmpeg должен проверить сертификат.
+        # HTML-страница — не видео, поэтому ждём InvalidDataError, а не ошибку TLS.
+        run: |
+          docker run --rm rosdomofon-faces:test python -c "
+          import av
+          try:
+              av.open('https://github.com/', timeout=15)
+          except av.error.InvalidDataError:
+              print('TLS OK')
+          "
 
       - uses: docker/metadata-action@v6
         id: meta
