@@ -4,6 +4,7 @@ import hashlib
 import logging
 import threading
 from dataclasses import dataclass
+from pathlib import Path
 
 import cv2
 import httpx
@@ -26,31 +27,33 @@ class Face:
     landmarks: tuple[tuple[int, int], ...]
 
 
-def ensure_model() -> None:
-    """Скачивает модель YuNet при первом запуске и проверяет контрольную сумму."""
-    path = config.YUNET_MODEL_FILE
+def ensure_model(path: Path, url: str, sha256: str) -> None:
+    """Скачивает модель при первом запуске и проверяет контрольную сумму."""
     with _model_lock:
         if path.exists():
             return
-        _download_model(path)
+        _LOGGER.info("Скачиваю модель: %s", url)
+        resp = httpx.get(url, follow_redirects=True, timeout=120)
+        resp.raise_for_status()
+        digest = hashlib.sha256(resp.content).hexdigest()
+        if digest != sha256:
+            raise RuntimeError(f"Контрольная сумма модели {path.name} не совпала: {digest}")
+        path.parent.mkdir(exist_ok=True)
+        path.write_bytes(resp.content)
 
 
-def _download_model(path) -> None:
-    _LOGGER.info("Скачиваю модель детекции лиц: %s", config.YUNET_MODEL_URL)
-    resp = httpx.get(config.YUNET_MODEL_URL, follow_redirects=True, timeout=60)
-    resp.raise_for_status()
-    digest = hashlib.sha256(resp.content).hexdigest()
-    if digest != config.YUNET_MODEL_SHA256:
-        raise RuntimeError(f"Контрольная сумма модели не совпала: {digest}")
-    config.MODELS_DIR.mkdir(exist_ok=True)
-    path.write_bytes(resp.content)
+def ensure_models() -> None:
+    """Скачивает все модели (детекция, распознавание) и шрифт подписей."""
+    ensure_model(config.YUNET_MODEL_FILE, config.YUNET_MODEL_URL, config.YUNET_MODEL_SHA256)
+    ensure_model(config.SFACE_MODEL_FILE, config.SFACE_MODEL_URL, config.SFACE_MODEL_SHA256)
+    ensure_model(config.FONT_FILE, config.FONT_URL, config.FONT_SHA256)
 
 
 class FaceDetector:
     """Обёртка над YuNet. Один экземпляр на воркер — FaceDetectorYN не потокобезопасен."""
 
     def __init__(self) -> None:
-        ensure_model()
+        ensure_model(config.YUNET_MODEL_FILE, config.YUNET_MODEL_URL, config.YUNET_MODEL_SHA256)
         self._net = cv2.FaceDetectorYN.create(
             str(config.YUNET_MODEL_FILE), "", (320, 320), config.DETECT_SCORE_THRESHOLD
         )
@@ -80,13 +83,3 @@ class FaceDetector:
                 landmarks=tuple((int(px), int(py)) for px, py in points),
             ))
         return faces
-
-
-def draw_faces(frame: np.ndarray, faces: list[Face]) -> None:
-    """Рисует рамки и уверенность поверх кадра (in-place)."""
-    for face in faces:
-        cv2.rectangle(frame, (face.x, face.y), (face.x + face.w, face.y + face.h), (0, 220, 0), 2)
-        cv2.putText(
-            frame, f"{face.score:.2f}", (face.x, max(face.y - 6, 12)),
-            cv2.FONT_HERSHEY_SIMPLEX, 0.6, (0, 220, 0), 2,
-        )

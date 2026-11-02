@@ -5,24 +5,44 @@
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <title>Росдомофон: лица</title>
 <style>
-  :root { color-scheme: light dark; font-family: system-ui, sans-serif; }
+  :root { color-scheme: light dark; font-family: system-ui, sans-serif; --known: #3c3; --unknown: #f80; --pending: #999; }
   body { margin: 0; padding: 16px; max-width: 1100px; margin-inline: auto; }
   header { display: flex; justify-content: space-between; align-items: center; }
   .hidden { display: none !important; }
-  form { display: flex; gap: 8px; margin: 8px 0; flex-wrap: wrap; }
-  input { padding: 8px; font-size: 16px; min-width: 260px; }
-  button { padding: 8px 14px; font-size: 15px; cursor: pointer; }
-  .tabs button.active { font-weight: bold; text-decoration: underline; }
-  #cameras { display: flex; gap: 8px; margin: 12px 0; flex-wrap: wrap; }
+  form, .row { display: flex; gap: 8px; margin: 8px 0; flex-wrap: wrap; align-items: center; }
+  input, select { padding: 7px; font-size: 15px; }
+  #login input { min-width: 260px; }
+  button { padding: 7px 12px; font-size: 15px; cursor: pointer; }
+  .tabs { display: flex; gap: 4px; border-bottom: 1px solid #8884; margin-bottom: 12px; }
+  .tabs button { border: none; background: none; padding: 10px 14px; border-bottom: 3px solid transparent; }
+  .tabs button.active { border-bottom-color: #2a7; font-weight: bold; }
+  #cameras { display: flex; gap: 8px; margin-bottom: 12px; flex-wrap: wrap; }
   #cameras button.active { outline: 2px solid #2a7; }
   #video { width: 100%; background: #111; min-height: 300px; border-radius: 6px; }
-  #info { margin-top: 8px; font-size: 15px; }
+  #info { margin-top: 8px; }
+  .chips { display: flex; gap: 6px; flex-wrap: wrap; margin-top: 6px; }
+  .chip { padding: 3px 10px; border-radius: 12px; color: #fff; font-size: 14px; }
+  .chip.known { background: var(--known); } .chip.unknown { background: var(--unknown); } .chip.pending { background: var(--pending); }
+  .grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(190px, 1fr)); gap: 12px; }
+  .card { border: 1px solid #8884; border-radius: 8px; padding: 8px; display: flex; flex-direction: column; gap: 6px; }
+  .card img { width: 100%; aspect-ratio: 1; object-fit: cover; border-radius: 6px; background: #8882; }
+  .card input, .card select { width: 100%; box-sizing: border-box; }
+  .muted { color: #888; font-size: 13px; }
+  .person { border: 1px solid #8884; border-radius: 8px; padding: 10px; margin-bottom: 10px; }
+  .person h3 { margin: 0 0 8px; display: flex; gap: 8px; align-items: center; }
+  .samples { display: flex; gap: 8px; flex-wrap: wrap; }
+  .sample { position: relative; }
+  .sample img { width: 90px; height: 90px; object-fit: cover; border-radius: 6px; }
+  .sample button { position: absolute; top: 2px; right: 2px; padding: 0 6px; font-size: 13px; }
+  table { width: 100%; border-collapse: collapse; }
+  td { padding: 6px; border-bottom: 1px solid #8883; vertical-align: middle; }
+  td img { width: 56px; height: 56px; object-fit: cover; border-radius: 4px; }
   .error { color: #d33; }
 </style>
 </head>
 <body>
 <header>
-  <h2>Росдомофон: поиск лиц</h2>
+  <h2>Росдомофон: лица</h2>
   <button id="logout" class="hidden">Выйти</button>
 </header>
 
@@ -50,33 +70,95 @@
 </section>
 
 <section id="main" class="hidden">
-  <div id="cameras"></div>
-  <img id="video" alt="Выберите камеру">
-  <div id="info"></div>
+  <nav class="tabs" id="nav">
+    <button data-tab="video" class="active">Видео</button>
+    <button data-tab="gallery">Незнакомые</button>
+    <button data-tab="people">Люди</button>
+    <button data-tab="journal">Журнал</button>
+  </nav>
+
+  <div id="tab-video">
+    <div id="cameras"></div>
+    <img id="video" alt="Выберите камеру">
+    <div id="info"></div>
+    <div id="present" class="chips"></div>
+  </div>
+
+  <div id="tab-gallery" class="hidden">
+    <p class="muted">Каждая карточка — одно появление незнакомого человека. Подпишите, кто это, — лицо станет образцом.
+      Неподписанные карточки удаляются автоматически.</p>
+    <div id="gallery" class="grid"></div>
+    <div class="row"><button id="gallery-more" class="hidden">Показать ещё</button></div>
+  </div>
+
+  <div id="tab-people" class="hidden">
+    <form id="form-person">
+      <input id="person-name" placeholder="Имя нового человека" required>
+      <button>Добавить</button>
+    </form>
+    <p class="muted">Образцы добавляются из вкладки «Незнакомые». Чем больше образцов в разных условиях, тем точнее распознавание.</p>
+    <div id="people"></div>
+  </div>
+
+  <div id="tab-journal" class="hidden">
+    <form id="form-journal">
+      <select id="j-camera"><option value="">Все камеры</option></select>
+      <select id="j-person"></select>
+      <label>с <input id="j-since" type="datetime-local"></label>
+      <label>по <input id="j-until" type="datetime-local"></label>
+      <button>Показать</button>
+    </form>
+    <table><tbody id="journal"></tbody></table>
+    <div class="row"><button id="journal-more" class="hidden">Показать ещё</button></div>
+  </div>
 </section>
 
 <p id="error" class="error"></p>
 
 <script>
 const $ = (id) => document.getElementById(id);
+const STATUS_TEXT = { known: "", unknown: "Неизвестный", pending: "определяется…" };
+let cameraNames = {};
+let persons = [];
 let currentCamera = null;
 let facesTimer = null;
+let activeTab = "video";
+let galleryCursor = null;
+let journalCursor = null;
 
-async function api(path, body) {
-  const resp = await fetch(path, body === undefined ? {} : {
-    method: "POST",
-    headers: { "Content-Type": "application/json" },
-    body: JSON.stringify(body),
-  });
+async function api(path, { method, body } = {}) {
+  const opts = { method: method || (body === undefined ? "GET" : "POST") };
+  if (body !== undefined) {
+    opts.headers = { "Content-Type": "application/json" };
+    opts.body = JSON.stringify(body);
+  }
+  const resp = await fetch(path, opts);
   const data = await resp.json().catch(() => ({}));
   if (!resp.ok) {
     if (resp.status === 401 && !path.startsWith("/api/auth/")) showLogin();
-    throw new Error(data.detail || `HTTP ${resp.status}`);
+    const detail = Array.isArray(data.detail) ? data.detail.map((d) => d.msg).join("; ") : data.detail;
+    throw new Error(detail || `HTTP ${resp.status}`);
   }
   return data;
 }
 
+// Обёртка для обработчиков: показывает ошибку, не роняя страницу
+const guarded = (fn) => async (...args) => {
+  showError();
+  try { await fn(...args); } catch (err) { showError(err); }
+};
+
 function showError(err) { $("error").textContent = err ? err.message || String(err) : ""; }
+const fmtTime = (sec) => new Date(sec * 1000).toLocaleString("ru-RU");
+const fmtDuration = (sec) => sec < 60 ? `${Math.round(sec)} с` : `${Math.round(sec / 60)} мин`;
+
+function el(tag, props = {}, ...children) {
+  const node = Object.assign(document.createElement(tag), props);
+  node.append(...children.filter((c) => c !== null && c !== undefined));
+  return node;
+}
+
+// --- Вход ---
 
 function showLogin() {
   stopVideo();
@@ -90,26 +172,54 @@ async function showMain() {
   $("main").classList.remove("hidden");
   $("logout").classList.remove("hidden");
   const cameras = await api("/api/cameras");
+  cameraNames = Object.fromEntries(cameras.map((c) => [c.id, c.name]));
   const box = $("cameras");
   box.innerHTML = "";
+  const jCamera = $("j-camera");
+  jCamera.length = 1;
   const saved = Number(localStorage.getItem("camera"));
   let initial = null;
   for (const cam of cameras) {
-    const btn = document.createElement("button");
-    btn.textContent = `${cam.name} (${cam.id})`;
+    const btn = el("button", { textContent: `${cam.name} (${cam.id})` });
     btn.onclick = () => selectCamera(cam.id, btn);
     box.appendChild(btn);
+    jCamera.appendChild(el("option", { value: cam.id, textContent: cam.name }));
     if (!initial || cam.id === saved) initial = [cam.id, btn];
   }
+  await loadPersons();
   // Сразу показываем последнюю выбранную камеру, а если её нет — первую в списке
   if (initial) selectCamera(...initial);
   else $("info").textContent = "Камер не найдено";
 }
 
-function stopVideo() {
+// --- Вкладки ---
+
+function switchMainTab(tab) {
+  activeTab = tab;
+  document.querySelectorAll("#nav button").forEach((b) => b.classList.toggle("active", b.dataset.tab === tab));
+  for (const name of ["video", "gallery", "people", "journal"]) {
+    $(`tab-${name}`).classList.toggle("hidden", name !== tab);
+  }
+  // Видео держим открытым только на своей вкладке — без зрителя сервер не кодирует кадры
+  if (tab === "video") {
+    const btn = document.querySelector("#cameras button.active");
+    if (btn && currentCamera === null) btn.click();
+  } else {
+    stopVideo(true);
+  }
+  if (tab === "gallery") loadGallery(true);
+  if (tab === "people") renderPeople();
+  if (tab === "journal") loadJournal(true);
+}
+document.querySelectorAll("#nav button").forEach((b) => b.onclick = guarded(() => switchMainTab(b.dataset.tab)));
+
+// --- Видео ---
+
+function stopVideo(keepSelection = false) {
   clearInterval(facesTimer);
   $("video").removeAttribute("src");
   currentCamera = null;
+  if (!keepSelection) $("present").innerHTML = "";
 }
 
 function selectCamera(id, btn) {
@@ -125,9 +235,156 @@ function selectCamera(id, btn) {
       const st = await api(`/api/cameras/${id}/faces`);
       if (currentCamera !== id) return;
       $("info").textContent = st.error ? `⚠ ${st.error}` : `Лиц в кадре: ${st.faces.length}`;
+      $("present").replaceChildren(...st.faces.map((f) =>
+        el("span", { className: `chip ${f.status}`, textContent: f.person ? f.person.name : STATUS_TEXT[f.status] })));
     } catch (e) { showError(e); }
   }, 500);
 }
+
+// --- Люди ---
+
+async function loadPersons() {
+  persons = await api("/api/persons");
+  const jPerson = $("j-person");
+  const selected = jPerson.value;
+  jPerson.replaceChildren(
+    el("option", { value: "", textContent: "Все люди" }),
+    el("option", { value: "unknown", textContent: "Только незнакомые" }),
+    ...persons.map((p) => el("option", { value: p.id, textContent: p.name })),
+  );
+  jPerson.value = [...jPerson.options].some((o) => o.value === selected) ? selected : "";
+}
+
+function renderPeople() {
+  const box = $("people");
+  if (!persons.length) {
+    box.replaceChildren(el("p", { className: "muted", textContent: "Пока никого нет." }));
+    return;
+  }
+  box.replaceChildren(...persons.map((p) => {
+    const rename = el("button", { textContent: "Переименовать" });
+    rename.onclick = guarded(async () => {
+      const name = prompt("Новое имя", p.name);
+      if (!name || name === p.name) return;
+      await api(`/api/persons/${p.id}`, { method: "PATCH", body: { name } });
+      await loadPersons(); renderPeople();
+    });
+    const remove = el("button", { textContent: "Удалить" });
+    remove.onclick = guarded(async () => {
+      if (!confirm(`Удалить «${p.name}» и все образцы (${p.samples.length})?`)) return;
+      await api(`/api/persons/${p.id}`, { method: "DELETE" });
+      await loadPersons(); renderPeople();
+    });
+    const samples = p.samples.map((s) => {
+      const del = el("button", { textContent: "×", title: "Удалить образец" });
+      del.onclick = guarded(async () => {
+        if (!confirm("Удалить этот образец?")) return;
+        await api(`/api/samples/${s.id}`, { method: "DELETE" });
+        await loadPersons(); renderPeople();
+      });
+      return el("div", { className: "sample" },
+        el("img", { src: `/api/samples/${s.id}/image`, title: fmtTime(s.created_at), loading: "lazy" }), del);
+    });
+    return el("div", { className: "person" },
+      el("h3", {}, p.name, el("span", { className: "muted", textContent: `образцов: ${p.samples.length}` }), rename, remove),
+      samples.length ? el("div", { className: "samples" }, ...samples)
+                     : el("p", { className: "muted", textContent: "Нет образцов — человек не будет распознаваться." }));
+  }));
+}
+
+$("form-person").onsubmit = guarded(async (e) => {
+  e.preventDefault();
+  await api("/api/persons", { body: { name: $("person-name").value } });
+  $("person-name").value = "";
+  await loadPersons(); renderPeople();
+});
+
+// --- Незнакомые ---
+
+function fillPersonSelect(select) {
+  const selected = select.value;
+  select.replaceChildren(
+    el("option", { value: "", textContent: "— выберите человека —" }),
+    ...persons.map((p) => el("option", { value: p.id, textContent: p.name })));
+  select.value = [...select.options].some((o) => o.value === selected) ? selected : "";
+}
+
+function galleryCard(ev) {
+  const select = el("select");
+  fillPersonSelect(select);
+  const name = el("input", { placeholder: "или новое имя" });
+  const assign = el("button", { textContent: "Назначить" });
+  const dismiss = el("button", { textContent: "Удалить" });
+  const card = el("div", { className: "card" },
+    el("img", { src: `/api/events/${ev.id}/image`, loading: "lazy" }),
+    el("div", { className: "muted", textContent: `${fmtTime(ev.started_at)} · ${cameraNames[ev.camera_id] || ev.camera_id}` }),
+    select, name, el("div", { className: "row" }, assign, dismiss));
+  assign.onclick = guarded(async () => {
+    const body = name.value.trim() ? { name: name.value.trim() } : select.value ? { person_id: Number(select.value) } : null;
+    if (!body) throw new Error("Выберите человека или введите новое имя");
+    await api(`/api/events/${ev.id}/assign`, { body });
+    card.remove();
+    await loadPersons();
+    // Новый человек должен появиться в списках остальных карточек
+    document.querySelectorAll("#gallery select").forEach(fillPersonSelect);
+  });
+  dismiss.onclick = guarded(async () => {
+    await api(`/api/events/${ev.id}`, { method: "DELETE" });
+    card.remove();
+  });
+  return card;
+}
+
+async function loadGallery(reset) {
+  if (reset) { galleryCursor = null; $("gallery").innerHTML = ""; }
+  const params = new URLSearchParams({ gallery: "true", limit: "24" });
+  if (galleryCursor) params.set("before_id", galleryCursor);
+  const page = await api(`/api/events?${params}`);
+  $("gallery").append(...page.items.map(galleryCard));
+  if (reset && !page.items.length) {
+    $("gallery").replaceChildren(el("p", { className: "muted", textContent: "Незнакомых лиц нет." }));
+  }
+  galleryCursor = page.next_before_id;
+  $("gallery-more").classList.toggle("hidden", !galleryCursor);
+}
+$("gallery-more").onclick = guarded(() => loadGallery(false));
+
+// --- Журнал ---
+
+function journalRow(ev) {
+  const who = ev.person_name
+    ? el("span", { className: "chip known", textContent: ev.person_name })
+    : el("span", { className: "chip unknown", textContent: "Неизвестный" });
+  return el("tr", {},
+    el("td", {}, el("img", { src: `/api/events/${ev.id}/image`, loading: "lazy" })),
+    el("td", {}, who),
+    el("td", { textContent: fmtTime(ev.started_at) }),
+    el("td", { className: "muted", textContent: fmtDuration(ev.ended_at - ev.started_at) }),
+    el("td", { textContent: cameraNames[ev.camera_id] || ev.camera_id }));
+}
+
+async function loadJournal(reset) {
+  if (reset) { journalCursor = null; $("journal").innerHTML = ""; }
+  const params = new URLSearchParams({ limit: "50" });
+  if ($("j-camera").value) params.set("camera_id", $("j-camera").value);
+  const person = $("j-person").value;
+  if (person === "unknown") params.set("unknown", "true");
+  else if (person) params.set("person_id", person);
+  if ($("j-since").value) params.set("since", new Date($("j-since").value).getTime() / 1000);
+  if ($("j-until").value) params.set("until", new Date($("j-until").value).getTime() / 1000);
+  if (journalCursor) params.set("before_id", journalCursor);
+  const page = await api(`/api/events?${params}`);
+  $("journal").append(...page.items.map(journalRow));
+  if (reset && !page.items.length) {
+    $("journal").replaceChildren(el("tr", {}, el("td", { className: "muted", textContent: "Событий нет." })));
+  }
+  journalCursor = page.next_before_id;
+  $("journal-more").classList.toggle("hidden", !journalCursor);
+}
+$("form-journal").onsubmit = guarded(async (e) => { e.preventDefault(); await loadJournal(true); });
+$("journal-more").onclick = guarded(() => loadJournal(false));
+
+// --- Формы входа ---
 
 function switchTab(sms) {
   $("tab-sms").classList.toggle("active", sms);
@@ -138,41 +395,33 @@ function switchTab(sms) {
 $("tab-sms").onclick = () => switchTab(true);
 $("tab-token").onclick = () => switchTab(false);
 
-$("form-phone").onsubmit = async (e) => {
-  e.preventDefault(); showError();
-  try {
-    await api("/api/auth/sms", { phone: $("phone").value });
-    $("form-code").classList.remove("hidden");
-    $("code").focus();
-  } catch (err) { showError(err); }
-};
+$("form-phone").onsubmit = guarded(async (e) => {
+  e.preventDefault();
+  await api("/api/auth/sms", { body: { phone: $("phone").value } });
+  $("form-code").classList.remove("hidden");
+  $("code").focus();
+});
 
-$("form-code").onsubmit = async (e) => {
-  e.preventDefault(); showError();
-  try {
-    await api("/api/auth/code", { phone: $("phone").value, code: $("code").value });
-    await showMain();
-  } catch (err) { showError(err); }
-};
+$("form-code").onsubmit = guarded(async (e) => {
+  e.preventDefault();
+  await api("/api/auth/code", { body: { phone: $("phone").value, code: $("code").value } });
+  await showMain();
+});
 
-$("form-token").onsubmit = async (e) => {
-  e.preventDefault(); showError();
-  try {
-    await api("/api/auth/refresh-token", { refresh_token: $("refresh-token").value });
-    await showMain();
-  } catch (err) { showError(err); }
-};
+$("form-token").onsubmit = guarded(async (e) => {
+  e.preventDefault();
+  await api("/api/auth/refresh-token", { body: { refresh_token: $("refresh-token").value } });
+  await showMain();
+});
 
-$("logout").onclick = async () => {
-  await api("/api/auth/logout", {});
+$("logout").onclick = guarded(async () => {
+  await api("/api/auth/logout", { body: {} });
   showLogin();
-};
+});
 
-(async () => {
-  try {
-    const st = await api("/api/auth/status");
-    st.authorized ? await showMain() : showLogin();
-  } catch (err) { showError(err); }
+guarded(async () => {
+  const st = await api("/api/auth/status");
+  st.authorized ? await showMain() : showLogin();
 })();
 </script>
 </body>
