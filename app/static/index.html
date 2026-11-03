@@ -84,6 +84,7 @@
     <button data-tab="people">Люди</button>
     <button data-tab="journal">Журнал</button>
     <button data-tab="doors">Двери</button>
+    <button data-tab="settings">Настройки</button>
   </nav>
 
   <div id="tab-video">
@@ -137,6 +138,30 @@
     <h3>Какую дверь открывает камера</h3>
     <table class="doors"><tbody id="door-bindings"></tbody></table>
   </div>
+
+  <div id="tab-settings" class="hidden">
+    <h3>Камеры мониторинга</h3>
+    <p class="muted">Отмеченные камеры анализируются круглосуточно, даже когда интерфейс закрыт.
+      Остальные — только пока открыто их видео.</p>
+    <div id="monitor-missing" class="warning hidden"></div>
+    <table class="doors"><tbody id="monitor-cameras"></tbody></table>
+    <p id="monitor-source" class="muted"></p>
+    <div class="row">
+      <button id="monitor-save">Сохранить</button>
+      <button id="monitor-reset">По умолчанию</button>
+    </div>
+
+    <h3>Порог узнавания</h3>
+    <p class="muted">Насколько лицо должно быть похоже на образцы человека (от 0 до 1). Выше — меньше
+      ложных узнаваний, но чаще «Неизвестный»; ниже — наоборот. Если включено открытие двери,
+      слишком низкий порог может открыть её чужому.</p>
+    <div class="row">
+      <input id="threshold" type="number" min="0" max="1" step="0.01" required>
+      <button id="threshold-save">Сохранить</button>
+      <button id="threshold-reset">По умолчанию</button>
+    </div>
+    <p id="threshold-source" class="muted"></p>
+  </div>
 </section>
 
 <p id="error" class="error"></p>
@@ -151,6 +176,7 @@ let facesTimer = null;
 let activeTab = "video";
 let galleryCursor = null;
 let journalCursor = null;
+let settingsTimer = null;
 
 async function api(path, { method, body } = {}) {
   const opts = { method: method || (body === undefined ? "GET" : "POST") };
@@ -192,6 +218,7 @@ function el(tag, props = {}, ...children) {
 
 function showLogin() {
   stopVideo();
+  clearInterval(settingsTimer);
   $("main").classList.add("hidden");
   $("logout").classList.add("hidden");
   $("login").classList.remove("hidden");
@@ -227,7 +254,7 @@ async function showMain() {
 function switchMainTab(tab) {
   activeTab = tab;
   document.querySelectorAll("#nav button").forEach((b) => b.classList.toggle("active", b.dataset.tab === tab));
-  for (const name of ["video", "gallery", "people", "journal", "doors"]) {
+  for (const name of ["video", "gallery", "people", "journal", "doors", "settings"]) {
     $(`tab-${name}`).classList.toggle("hidden", name !== tab);
   }
   // Видео держим открытым только на своей вкладке — без зрителя сервер не кодирует кадры
@@ -241,6 +268,12 @@ function switchMainTab(tab) {
   if (tab === "people") renderPeople();
   if (tab === "journal") loadJournal(true);
   if (tab === "doors") loadDoors();
+  // Состояние потоков камер на вкладке настроек обновляется, пока она открыта
+  clearInterval(settingsTimer);
+  if (tab === "settings") {
+    loadSettings();
+    settingsTimer = setInterval(() => refreshCameraStatus().catch(showError), 3000);
+  }
 }
 document.querySelectorAll("#nav button").forEach((b) => b.onclick = guarded(() => switchMainTab(b.dataset.tab)));
 
@@ -458,6 +491,71 @@ document.querySelectorAll('input[name="mode"]').forEach((radio) => {
     await api("/api/unlock", { method: "PUT", body: { mode: radio.value } });
   });
 });
+
+// --- Настройки ---
+
+function cameraStatusText(st) {
+  if (!st || !st.running) return "не анализируется";
+  if (st.error) return `⚠ ${st.error}`;
+  if (!st.streaming) return "подключение…";
+  return st.monitored ? "анализ идёт" : "анализ идёт, пока открыто видео";
+}
+
+async function refreshCameraStatus() {
+  const { cameras } = await api("/api/status");
+  const byId = Object.fromEntries(cameras.map((c) => [c.camera_id, c]));
+  document.querySelectorAll("#monitor-cameras [data-camera]").forEach((cell) => {
+    cell.textContent = cameraStatusText(byId[cell.dataset.camera]);
+  });
+}
+
+function renderSettings(st) {
+  const monitored = st.monitor_cameras;  // null — все камеры аккаунта
+  $("monitor-cameras").replaceChildren(...Object.entries(cameraNames).map(([id, name]) => {
+    const status = el("td", { className: "muted" });
+    status.dataset.camera = id;
+    return el("tr", {},
+      el("td", {}, el("label", { className: "row" },
+        el("input", { type: "checkbox", value: id, checked: monitored === null || monitored.includes(Number(id)) }),
+        `${name} (${id})`)),
+      status);
+  }));
+
+  const fromEnv = st.monitor_cameras_default;
+  $("monitor-source").textContent = st.monitor_cameras_source === "ui" ? "Набор задан здесь."
+    : fromEnv === null ? "По умолчанию: все камеры аккаунта."
+    : `По умолчанию из ROSDOMOFON_MONITOR_CAMERAS: ${fromEnv.join(", ") || "ни одной"}.`;
+  const missing = (monitored || []).filter((id) => !(id in cameraNames));
+  $("monitor-missing").classList.toggle("hidden", !missing.length);
+  $("monitor-missing").textContent = missing.length
+    ? `Камеры не найдены в аккаунте и не мониторятся: ${missing.join(", ")}.` : "";
+
+  $("threshold").value = st.match_threshold;
+  $("threshold-source").textContent = st.match_threshold_source === "ui"
+    ? `Задан здесь. По умолчанию: ${st.match_threshold_default}.`
+    : `По умолчанию (ROSDOMOFON_MATCH_THRESHOLD): ${st.match_threshold_default}.`;
+}
+
+async function loadSettings() {
+  renderSettings(await api("/api/settings"));
+  await refreshCameraStatus();
+}
+
+async function saveSettings(body) {
+  renderSettings(await api("/api/settings", { method: "PUT", body }));
+  await refreshCameraStatus();
+}
+
+$("monitor-save").onclick = guarded(() => saveSettings({
+  monitor_cameras: [...document.querySelectorAll("#monitor-cameras input:checked")].map((c) => Number(c.value)),
+}));
+$("monitor-reset").onclick = guarded(() => saveSettings({ monitor_cameras: null }));
+$("threshold-save").onclick = guarded(() => {
+  const value = $("threshold").valueAsNumber;
+  if (!(value >= 0 && value <= 1)) throw new Error("Порог должен быть от 0 до 1");
+  return saveSettings({ match_threshold: value });
+});
+$("threshold-reset").onclick = guarded(() => saveSettings({ match_threshold: null }));
 
 // --- Формы входа ---
 

@@ -241,20 +241,35 @@ class WorkerRegistry:
         self._store = store
         self._unlocker = unlocker
         self._workers: dict[int, CameraWorker] = {}
-        self._lock = threading.Lock()
+        self._lock = threading.RLock()
 
-    def start_monitoring(self) -> None:
-        """Запускает постоянные воркеры для камер мониторинга (MONITOR_CAMERAS или все)."""
+    def monitored_ids(self) -> frozenset[int] | None:
+        """Действующий набор камер мониторинга: из интерфейса, иначе из окружения (None — все)."""
+        cameras = self._store.monitor_cameras()
+        return frozenset(cameras) if cameras is not None else config.MONITOR_CAMERAS
+
+    def sync_monitoring(self) -> None:
+        """Приводит постоянные воркеры к действующему набору камер; можно вызывать повторно.
+
+        Камеры вне набора теряют флаг постоянного мониторинга и останавливаются
+        сами, когда их никто не смотрит, — открытый просмотр не обрывается.
+        """
         cameras = self._client.cameras()
-        wanted = config.MONITOR_CAMERAS
+        wanted = self.monitored_ids()
         if wanted is not None:
             missing = wanted - {c.id for c in cameras}
             if missing:
                 _LOGGER.warning("Камеры мониторинга не найдены в аккаунте: %s", sorted(missing))
             cameras = [c for c in cameras if c.id in wanted]
-        for camera in cameras:
-            self._start(camera, persistent=True)
-        _LOGGER.info("Мониторинг камер: %s", [c.id for c in cameras])
+        ids = {c.id for c in cameras}
+        with self._lock:
+            for worker in self._workers.values():
+                if worker.persistent and worker.camera.id not in ids:
+                    _LOGGER.info("Камера %s: исключена из мониторинга", worker.camera.id)
+                    worker.persistent = False
+            for camera in cameras:
+                self._start(camera, persistent=True)
+        _LOGGER.info("Мониторинг камер: %s", sorted(ids))
 
     def get(self, camera: Camera) -> CameraWorker:
         """Воркер для просмотра: уже работающий или новый по требованию."""
@@ -276,7 +291,7 @@ class WorkerRegistry:
             worker.join(timeout=20)
 
     def _start(self, camera: Camera, persistent: bool) -> CameraWorker:
-        with self._lock:
+        with self._lock:  # RLock: вызывается и из sync_monitoring под блокировкой
             worker = self._workers.get(camera.id)
             if worker is None or worker.stopped:
                 worker = CameraWorker(self._client, self._store, camera, persistent, self._unlocker)

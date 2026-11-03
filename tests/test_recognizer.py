@@ -1,5 +1,7 @@
 """Тесты сопоставления вектора лица с базой образцов."""
 
+import dataclasses
+
 import numpy as np
 
 from app.recognizer import match_gallery
@@ -47,3 +49,27 @@ def test_best_sample_wins_across_people():
     probe = _unit(B + 0.05 * A)
     gallery = _gallery([(1, A), (1, _unit(A + B)), (2, B)])
     assert match_gallery(gallery, probe, 0.363)[0] == 2
+
+
+def test_recognizer_threshold_from_store_without_restart(tmp_path, monkeypatch):
+    from app import config
+    from app.recognizer import Recognizer
+    from app.store import Store
+
+    monkeypatch.setattr(config, "MATCH_THRESHOLD", 0.363)
+    store = Store(tmp_path / "faces.db", tmp_path / "faces")
+    # Без загрузки модели: для сравнения нужны только хранилище и галерея
+    recognizer = object.__new__(Recognizer)
+    recognizer._store = store
+    recognizer._gallery = dataclasses.replace(_gallery([(1, A)]), version=store.version)
+    probe = _unit(A + 0.8 * B)
+    similarity = float(A @ probe)
+    assert 0.363 < similarity < 0.99
+
+    assert recognizer.match(probe)[0] == 1
+    store.set_match_threshold(0.99)
+    assert recognizer.threshold() == 0.99
+    assert recognizer.match(probe)[0] is None
+    store.set_match_threshold(None)
+    assert recognizer.match(probe)[0] == 1
+    store.close()

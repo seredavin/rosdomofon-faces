@@ -1,5 +1,6 @@
 """Хранилище людей, образцов и событий: SQLite + JPEG-снимки на диске."""
 
+import json
 import logging
 import shutil
 import sqlite3
@@ -123,6 +124,10 @@ class Store:
         self._migrate()
         # Версия базы образцов: растёт при любом изменении людей/образцов
         self._version = 0
+        # Настройки из интерфейса (None — не заданы, действует окружение); кэш в памяти,
+        # чтобы потоки камер не ходили в SQLite на каждом распознавании
+        self._monitor_cameras = self._load_setting("monitor_cameras", lambda v: [int(c) for c in json.loads(v)])
+        self._match_threshold = self._load_setting("match_threshold", float)
 
     @property
     def version(self) -> int:
@@ -418,6 +423,34 @@ class Store:
                 (camera_id, adapter_id, relay, name),
             )
 
+    # --- Настройки из интерфейса ---
+
+    def monitor_cameras(self) -> list[int] | None:
+        """Набор камер мониторинга, заданный в интерфейсе; None — не задан."""
+        cameras = self._monitor_cameras
+        return list(cameras) if cameras is not None else None
+
+    def set_monitor_cameras(self, cameras: list[int] | None) -> None:
+        """Сохраняет набор (пустой — мониторинг выключен) или сбрасывает его (None)."""
+        if cameras is not None:
+            if any(isinstance(c, bool) or not isinstance(c, int) for c in cameras):
+                raise Invalid("id камер должны быть целыми числами")
+            cameras = sorted(set(cameras))
+        self._save_setting("monitor_cameras", None if cameras is None else json.dumps(cameras))
+        self._monitor_cameras = cameras
+
+    def match_threshold(self) -> float | None:
+        """Порог узнавания, заданный в интерфейсе; None — не задан."""
+        return self._match_threshold
+
+    def set_match_threshold(self, threshold: float | None) -> None:
+        if threshold is not None:
+            threshold = float(threshold)
+            if not 0 <= threshold <= 1:
+                raise Invalid("Порог должен быть от 0 до 1")
+        self._save_setting("match_threshold", None if threshold is None else repr(threshold))
+        self._match_threshold = threshold
+
     # --- Очистка ---
 
     def cleanup(
@@ -454,6 +487,29 @@ class Store:
             if column not in existing:
                 _LOGGER.info("Миграция БД: %s.%s", table, column)
                 self._db.execute(f"ALTER TABLE {table} ADD COLUMN {column} {definition}")
+
+    def _load_setting(self, key: str, parse):
+        with self._lock:
+            row = self._db.execute("SELECT value FROM settings WHERE key = ?", (key,)).fetchone()
+        if row is None:
+            return None
+        try:
+            return parse(row["value"])
+        except (ValueError, TypeError) as exc:
+            _LOGGER.warning("Настройка %s повреждена (%s), использую значение по умолчанию", key, exc)
+            return None
+
+    def _save_setting(self, key: str, value: str | None) -> None:
+        """Записывает настройку; None удаляет её."""
+        with self._lock:
+            if value is None:
+                self._db.execute("DELETE FROM settings WHERE key = ?", (key,))
+            else:
+                self._db.execute(
+                    "INSERT INTO settings(key, value) VALUES (?, ?)"
+                    " ON CONFLICT(key) DO UPDATE SET value = excluded.value",
+                    (key, value),
+                )
 
     @staticmethod
     def _remove_orphans(directory: Path, used: set[str], now: float) -> None:

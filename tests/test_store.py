@@ -248,3 +248,39 @@ def test_unlock_result_on_event_and_filter(store):
     store.add_event(1001, 2, 3, person_id, b"j", None)
     events, _ = store.list_events(unlocked=True)
     assert [e["unlock"] for e in events] == ["would_open"]
+
+
+def test_ui_settings_default_set_and_reset(store):
+    assert store.monitor_cameras() is None and store.match_threshold() is None
+    store.set_monitor_cameras([12034, 1001, 12034])
+    store.set_match_threshold(0.45)
+    assert store.monitor_cameras() == [1001, 12034] and store.match_threshold() == 0.45
+    store.set_monitor_cameras([])  # пустой набор — не то же, что «не задан»
+    assert store.monitor_cameras() == []
+    store.set_monitor_cameras(None)
+    store.set_match_threshold(None)
+    assert store.monitor_cameras() is None and store.match_threshold() is None
+
+
+def test_ui_settings_survive_reopen(tmp_path):
+    s = Store(tmp_path / "faces.db", tmp_path / "faces")
+    s.set_monitor_cameras([12034])
+    s.set_match_threshold(0.4)
+    s.close()
+    s = Store(tmp_path / "faces.db", tmp_path / "faces")
+    assert s.monitor_cameras() == [12034] and s.match_threshold() == 0.4
+    s.close()
+
+
+@pytest.mark.parametrize("threshold", [-0.1, 1.5, float("nan")])
+def test_ui_settings_reject_bad_threshold(store, threshold):
+    store.set_match_threshold(0.5)
+    with pytest.raises(Invalid):
+        store.set_match_threshold(threshold)
+    assert store.match_threshold() == 0.5
+
+
+def test_ui_settings_reject_bad_camera_ids(store):
+    with pytest.raises(Invalid):
+        store.set_monitor_cameras([True])
+    assert store.monitor_cameras() is None
