@@ -26,8 +26,8 @@ def match_gallery(gallery: Gallery, embedding: np.ndarray, threshold: float) -> 
 class Recognizer:
     """Один экземпляр на воркер — FaceRecognizerSF не потокобезопасен.
 
-    База образцов перечитывается из хранилища, когда меняется его версия, —
-    так новые образцы начинают работать без перезапуска.
+    База образцов перечитывается из хранилища, когда меняется его версия, а порог
+    читается на каждом сравнении — так изменения работают без перезапуска.
     """
 
     def __init__(self, store: Store) -> None:
@@ -50,7 +50,12 @@ class Recognizer:
         return feature / np.linalg.norm(feature)
 
     def match(self, embedding: np.ndarray) -> tuple[int | None, float]:
-        return match_gallery(self._current(), embedding, config.MATCH_THRESHOLD)
+        return match_gallery(self._current(), embedding, self.threshold())
+
+    def threshold(self) -> float:
+        """Порог из настроек интерфейса, а если он не задан — из окружения."""
+        threshold = self._store.match_threshold()
+        return config.MATCH_THRESHOLD if threshold is None else threshold
 
     def name(self, person_id: int | None) -> str | None:
         if person_id is None:

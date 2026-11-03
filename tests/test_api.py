@@ -143,3 +143,58 @@ def test_events_unlocked_filter(api, store):
     store.add_event(1001, 2, 3, person_id, b"j", None)
     items = api.get("/api/events", params={"unlocked": True}).json()["items"]
     assert [e["unlock"] for e in items] == ["opened"]
+
+
+# --- Настройки ---
+
+from app import config  # noqa: E402
+from app.rosdomofon import Camera  # noqa: E402
+
+
+@pytest.fixture
+def settings_env(monkeypatch, store):
+    """Аккаунт с двумя камерами, в окружении — несуществующая 1001; синхронизация — заглушка."""
+    monkeypatch.setattr(config, "MONITOR_CAMERAS", frozenset({1001}))
+    monkeypatch.setattr(config, "MATCH_THRESHOLD", 0.363)
+    monkeypatch.setattr(main.client, "_tok", {"access_token": "x"})
+    monkeypatch.setattr(main.client, "cameras", lambda: [
+        Camera(12034, "Подъезд", "s.example"), Camera(12035, "Калитка", "s.example"),
+    ])
+    synced = []
+    monkeypatch.setattr(main.workers, "_store", store)
+    monkeypatch.setattr(main.workers, "sync_monitoring", lambda: synced.append(True))
+    return synced
+
+
+def test_settings_defaults_from_env(api, settings_env):
+    assert api.get("/api/settings").json() == {
+        "monitor_cameras": [1001], "monitor_cameras_default": [1001], "monitor_cameras_source": "default",
+        "match_threshold": 0.363, "match_threshold_default": 0.363, "match_threshold_source": "default",
+    }
+
+
+def test_settings_update_and_reset(api, settings_env):
+    resp = api.put("/api/settings", json={"monitor_cameras": [12034], "match_threshold": 0.45}).json()
+    assert resp["monitor_cameras"] == [12034] and resp["monitor_cameras_source"] == "ui"
+    assert resp["match_threshold"] == 0.45 and resp["match_threshold_source"] == "ui"
+    assert settings_env == [True]
+
+    # Только порог: набор камер не трогается и мониторинг не пересинхронизируется
+    resp = api.put("/api/settings", json={"match_threshold": None}).json()
+    assert resp["match_threshold"] == 0.363 and resp["match_threshold_source"] == "default"
+    assert resp["monitor_cameras"] == [12034] and settings_env == [True]
+
+    resp = api.put("/api/settings", json={"monitor_cameras": []}).json()
+    assert resp["monitor_cameras"] == [] and resp["monitor_cameras_source"] == "ui"
+    resp = api.put("/api/settings", json={"monitor_cameras": None}).json()
+    assert resp["monitor_cameras"] == [1001] and resp["monitor_cameras_source"] == "default"
+    assert len(settings_env) == 3
+
+
+def test_settings_errors_change_nothing(api, settings_env, store):
+    resp = api.put("/api/settings", json={"monitor_cameras": [12034, 999], "match_threshold": 0.5})
+    assert resp.status_code == 400 and "999" in resp.json()["detail"]
+    assert api.put("/api/settings", json={"match_threshold": 1.5}).status_code == 400
+    assert api.put("/api/settings", json={"match_threshold": -0.1}).status_code == 400
+    assert store.monitor_cameras() is None and store.match_threshold() is None
+    assert settings_env == []

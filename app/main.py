@@ -30,7 +30,7 @@ auth = Auth()
 def _start_monitoring() -> None:
     """Запускает мониторинг; ошибки только логируются — вход и сервис работают и без него."""
     try:
-        workers.start_monitoring()
+        workers.sync_monitoring()
     except (AuthError, httpx.HTTPError) as exc:
         _LOGGER.warning("Не удалось запустить мониторинг камер: %s", exc)
 
@@ -96,6 +96,12 @@ class UnlockIn(BaseModel):
     mode: str | None = None
     # {camera_id: id двери "<adapterId>:<relay>" или null — отвязать}
     bindings: dict[int, str | None] | None = None
+
+
+class SettingsIn(BaseModel):
+    # Поле не передано — не менять; null — сбросить к значению из окружения
+    monitor_cameras: list[int] | None = None
+    match_threshold: float | None = None
 
 
 class AssignIn(BaseModel):
@@ -367,6 +373,50 @@ def update_unlock_settings(body: UnlockIn):
     for camera_id, door in resolved.items():
         store.set_camera_door(camera_id, door)
     return unlock_settings()
+
+
+# --- Настройки ---
+
+def _sorted_or_none(ids) -> list[int] | None:
+    return sorted(ids) if ids is not None else None
+
+
+@app.get("/api/settings")
+def settings():
+    """Действующие значения, значения по умолчанию (из окружения) и источник.
+
+    monitor_cameras = null — мониторятся все камеры аккаунта.
+    """
+    threshold = store.match_threshold()
+    return {
+        "monitor_cameras": _sorted_or_none(workers.monitored_ids()),
+        "monitor_cameras_default": _sorted_or_none(config.MONITOR_CAMERAS),
+        "monitor_cameras_source": "default" if store.monitor_cameras() is None else "ui",
+        "match_threshold": config.MATCH_THRESHOLD if threshold is None else threshold,
+        "match_threshold_default": config.MATCH_THRESHOLD,
+        "match_threshold_source": "default" if threshold is None else "ui",
+    }
+
+
+@app.put("/api/settings")
+def update_settings(body: SettingsIn):
+    """Частичное обновление; сначала всё проверяется, потом применяется."""
+    fields = body.model_fields_set
+    threshold = body.match_threshold
+    if "match_threshold" in fields and threshold is not None and not 0 <= threshold <= 1:
+        raise HTTPException(400, "Порог должен быть от 0 до 1")
+    cameras = body.monitor_cameras
+    if "monitor_cameras" in fields and cameras:
+        unknown = set(cameras) - {c.id for c in _call(client.cameras)}
+        if unknown:
+            raise HTTPException(400, f"Камеры не найдены в аккаунте: {', '.join(map(str, sorted(unknown)))}")
+    if "match_threshold" in fields:
+        _call(store.set_match_threshold, threshold)
+    if "monitor_cameras" in fields:
+        _call(store.set_monitor_cameras, cameras)
+        if client.is_authorized:
+            _call(workers.sync_monitoring)
+    return settings()
 
 
 @app.get("/")
